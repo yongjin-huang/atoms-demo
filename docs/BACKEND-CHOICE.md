@@ -140,7 +140,9 @@ finished monolith on every criterion they listed.
 
 Option B is the implementation now. Next.js is the BFF, Auth.js uses JWT
 sessions without a database adapter, and FastAPI owns generation plus the
-`users`, `projects`, `versions`, and `messages` tables.
+`users`, `projects`, `versions`, and `messages` tables. User-level provider
+configuration also lives on `users`, so provider keys are set in the app instead
+of process environment variables.
 
 The seam also moved from a blocking `/generate` JSON route to streaming
 `/generate/stream` SSE. The browser still talks only to Next; Next forwards the
@@ -168,5 +170,6 @@ session.
 OpenRouter share the OpenAI-compatible client; Anthropic uses its own SDK.
 
 The largest remaining backend shortcut is schema management: startup calls
-`create_all()`, which is acceptable for this demo but not enough for production
-changes to existing tables. Alembic is the obvious next step.
+`create_all()` and applies a tiny settings-column patch, which is acceptable for
+this demo but not enough for production changes to existing tables. Alembic is
+the obvious next step.

@@ -17,6 +17,12 @@ type Message = {
 type Project = { id: string; title: string };
 type Model = { id: string; label: string; provider: string };
 type User = { name?: string | null; image?: string | null };
+type Settings = {
+  defaultModelId: string | null;
+  configured: boolean;
+  models: Model[];
+  keys: { deepseek: boolean; openai: boolean; anthropic: boolean; openrouter: boolean };
+};
 
 export default function Workbench({
   user,
@@ -36,6 +42,15 @@ export default function Workbench({
   const [history, setHistory] = useState<Project[]>([]);
   const [models, setModels] = useState<Model[]>([]);
   const [modelId, setModelId] = useState("");
+  const [settings, setSettings] = useState<Settings | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsSaving, setSettingsSaving] = useState(false);
+  const [settingsError, setSettingsError] = useState<string | null>(null);
+  const [settingsDefault, setSettingsDefault] = useState("");
+  const [deepseekKey, setDeepseekKey] = useState("");
+  const [openaiKey, setOpenaiKey] = useState("");
+  const [anthropicKey, setAnthropicKey] = useState("");
+  const [openrouterKey, setOpenrouterKey] = useState("");
   const [versions, setVersions] = useState<Version[]>(initialVersions);
   const [messages, setMessages] = useState<Message[]>(initialMessages);
   const [activeN, setActiveN] = useState(initialVersions.at(-1)?.n ?? 0);
@@ -63,14 +78,27 @@ export default function Workbench({
       .catch(() => setHistory([]));
   }, [projectId]);
 
-  useEffect(() => {
-    fetch("/api/models")
+  async function refreshModels() {
+    return fetch("/api/models")
       .then((r) => r.json())
       .then((d) => {
         setModels(Array.isArray(d?.models) ? d.models : []);
         setModelId(d?.default ?? "");
       })
       .catch(() => setModels([]));
+  }
+
+  useEffect(() => {
+    refreshModels();
+
+    fetch("/api/settings")
+      .then((r) => r.json())
+      .then((d: Settings) => {
+        setSettings(d);
+        setSettingsDefault(d.defaultModelId ?? "");
+        if (!d.configured) setSettingsOpen(true);
+      })
+      .catch(() => setSettings(null));
   }, []);
 
   useEffect(() => {
@@ -93,6 +121,40 @@ export default function Workbench({
   const labelFor = (id?: string | null) =>
     (id && models.find((m) => m.id === id)?.label) || id || "";
   const versionFor = (vid?: string | null) => versions.find((v) => v.id === vid);
+  const allModelOptions = settings?.models.length ? settings.models : models;
+
+  async function saveSettings() {
+    setSettingsSaving(true);
+    setSettingsError(null);
+    try {
+      const res = await fetch("/api/settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          defaultModelId: settingsDefault,
+          ...(deepseekKey.trim() ? { deepseekApiKey: deepseekKey } : {}),
+          ...(openaiKey.trim() ? { openaiApiKey: openaiKey } : {}),
+          ...(anthropicKey.trim() ? { anthropicApiKey: anthropicKey } : {}),
+          ...(openrouterKey.trim() ? { openrouterApiKey: openrouterKey } : {}),
+        }),
+      });
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(d.error ?? "Could not save settings.");
+
+      setSettings(d);
+      setSettingsDefault(d.defaultModelId ?? "");
+      setDeepseekKey("");
+      setOpenaiKey("");
+      setAnthropicKey("");
+      setOpenrouterKey("");
+      await refreshModels();
+      setSettingsOpen(false);
+    } catch (e) {
+      setSettingsError(e instanceof Error ? e.message : "Could not save settings.");
+    } finally {
+      setSettingsSaving(false);
+    }
+  }
 
   async function send() {
     const text = prompt.trim();
@@ -191,6 +253,7 @@ export default function Workbench({
   const empty = messages.length === 0 && !pending;
 
   return (
+    <>
     <div className="shell">
       <aside className="rail">
         <div className="brand">atoms<span>.</span>demo</div>
@@ -211,6 +274,9 @@ export default function Workbench({
         <div className="who">
           {user.image && <img src={user.image} alt="" />}
           <span className="who-name">{user.name ?? "Signed in"}</span>
+          <button type="button" className="who-out" onClick={() => setSettingsOpen(true)}>
+            Settings
+          </button>
           <form action={signOutAction}>
             <button type="submit" className="who-out">Sign out</button>
           </form>
@@ -421,5 +487,67 @@ export default function Workbench({
         </section>
       </div>
     </div>
+    {settingsOpen && (
+      <div className="modal-backdrop" role="presentation">
+        <section className="settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+          <div className="settings-head">
+            <div>
+              <h2 id="settings-title">User settings</h2>
+              <p>Choose a default model and add the provider key this demo should use.</p>
+            </div>
+            {settings?.configured && (
+              <button className="modal-close" onClick={() => setSettingsOpen(false)} aria-label="Close settings">
+                X
+              </button>
+            )}
+          </div>
+
+          <label className="settings-field">
+            <span>Default model</span>
+            <select value={settingsDefault} onChange={(e) => setSettingsDefault(e.target.value)}>
+              <option value="">Pick a model</option>
+              {allModelOptions.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.provider} · {m.label}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <div className="key-grid">
+            <label className="settings-field">
+              <span>DeepSeek key {settings?.keys.deepseek ? "· saved" : ""}</span>
+              <input value={deepseekKey} onChange={(e) => setDeepseekKey(e.target.value)} placeholder="sk-..." />
+            </label>
+            <label className="settings-field">
+              <span>Anthropic key {settings?.keys.anthropic ? "· saved" : ""}</span>
+              <input value={anthropicKey} onChange={(e) => setAnthropicKey(e.target.value)} placeholder="sk-ant-..." />
+            </label>
+            <label className="settings-field">
+              <span>OpenAI key {settings?.keys.openai ? "· saved" : ""}</span>
+              <input value={openaiKey} onChange={(e) => setOpenaiKey(e.target.value)} placeholder="sk-..." />
+            </label>
+            <label className="settings-field">
+              <span>OpenRouter key {settings?.keys.openrouter ? "· saved" : ""}</span>
+              <input value={openrouterKey} onChange={(e) => setOpenrouterKey(e.target.value)} placeholder="sk-or-..." />
+            </label>
+          </div>
+
+          {settingsError && <div className="error">{settingsError}</div>}
+
+          <div className="settings-actions">
+            {settings?.configured && (
+              <button className="secondary" onClick={() => setSettingsOpen(false)} disabled={settingsSaving}>
+                Cancel
+              </button>
+            )}
+            <button className="build" onClick={saveSettings} disabled={settingsSaving || !settingsDefault}>
+              {settingsSaving ? "Saving…" : "Save settings"}
+            </button>
+          </div>
+        </section>
+      </div>
+    )}
+    </>
   );
 }

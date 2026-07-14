@@ -1,29 +1,26 @@
-"""One registry, two adapters — a straight port of lib/models.ts.
+"""One registry, two adapters.
 
 DeepSeek, OpenAI and OpenRouter all speak the OpenAI wire format, so they share
 a single client and differ only by base_url + key. Anthropic has its own SDK.
-
-That this ported across languages unchanged is a decent sign it was the right
-abstraction.
 """
 
 from dataclasses import dataclass
 
-from settings import settings
+from models import User
 
 
 @dataclass(frozen=True)
 class Provider:
     label: str
-    env_key: str
+    key_attr: str
     base_url: str | None = None  # None for Anthropic
 
 
 PROVIDERS: dict[str, Provider] = {
-    "deepseek": Provider("DeepSeek", "DEEPSEEK_API_KEY", "https://api.deepseek.com"),
-    "openai": Provider("OpenAI", "OPENAI_API_KEY", "https://api.openai.com/v1"),
-    "openrouter": Provider("OpenRouter", "OPENROUTER_API_KEY", "https://openrouter.ai/api/v1"),
-    "anthropic": Provider("Anthropic", "ANTHROPIC_API_KEY"),
+    "deepseek": Provider("DeepSeek", "deepseek_api_key", "https://api.deepseek.com"),
+    "openai": Provider("OpenAI", "openai_api_key", "https://api.openai.com/v1"),
+    "openrouter": Provider("OpenRouter", "openrouter_api_key", "https://openrouter.ai/api/v1"),
+    "anthropic": Provider("Anthropic", "anthropic_api_key"),
 }
 
 
@@ -45,15 +42,22 @@ MODELS: list[ModelSpec] = [
 DEFAULT_MODEL_ID = "deepseek/deepseek-chat"
 
 
-def api_key_for(provider: str) -> str:
-    return getattr(settings, PROVIDERS[provider].env_key, "") or ""
+def api_key_for(provider: str, user: User) -> str:
+    return getattr(user, PROVIDERS[provider].key_attr, "") or ""
 
 
-def available_models() -> list[ModelSpec]:
-    """Only models whose provider key is actually configured. An unconfigured
-    provider never reaches the picker, so it can't fail at generate time."""
-    return [m for m in MODELS if api_key_for(m.provider)]
+def available_models(user: User) -> list[ModelSpec]:
+    """Only models whose provider key is configured in user settings."""
+    return [m for m in MODELS if api_key_for(m.provider, user)]
 
 
-def find_model(model_id: str) -> ModelSpec | None:
-    return next((m for m in available_models() if m.id == model_id), None)
+def default_model_for(user: User) -> str | None:
+    models = available_models(user)
+    ids = {m.id for m in models}
+    if user.default_model_id in ids:
+        return user.default_model_id
+    return DEFAULT_MODEL_ID if DEFAULT_MODEL_ID in ids else (models[0].id if models else None)
+
+
+def find_model(model_id: str, user: User) -> ModelSpec | None:
+    return next((m for m in available_models(user) if m.id == model_id), None)

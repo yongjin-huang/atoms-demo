@@ -20,6 +20,11 @@ class User(Base):
     email: Mapped[str | None] = mapped_column(String, unique=True)
     name: Mapped[str | None] = mapped_column(String)
     image: Mapped[str | None] = mapped_column(String)
+    default_model_id: Mapped[str | None] = mapped_column(String)
+    deepseek_api_key: Mapped[str | None] = mapped_column(Text)
+    openai_api_key: Mapped[str | None] = mapped_column(Text)
+    anthropic_api_key: Mapped[str | None] = mapped_column(Text)
+    openrouter_api_key: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     projects: Mapped[list["Project"]] = relationship(

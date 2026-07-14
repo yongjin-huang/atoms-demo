@@ -57,3 +57,25 @@ class ModelOut(BaseModel):
 class ModelsOut(BaseModel):
     models: list[ModelOut]
     default: str | None
+
+
+class KeyStatus(BaseModel):
+    deepseek: bool
+    openai: bool
+    anthropic: bool
+    openrouter: bool
+
+
+class SettingsOut(BaseModel):
+    default_model_id: str | None = Field(default=None, serialization_alias="defaultModelId")
+    configured: bool
+    keys: KeyStatus
+    models: list[ModelOut]
+
+
+class SettingsIn(BaseModel):
+    default_model_id: str | None = Field(default=None, validation_alias="defaultModelId")
+    deepseek_api_key: str | None = Field(default=None, validation_alias="deepseekApiKey")
+    openai_api_key: str | None = Field(default=None, validation_alias="openaiApiKey")
+    anthropic_api_key: str | None = Field(default=None, validation_alias="anthropicApiKey")
+    openrouter_api_key: str | None = Field(default=None, validation_alias="openrouterApiKey")

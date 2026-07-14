@@ -2,7 +2,7 @@
 FROM python:3.12-slim
 WORKDIR /srv
 
-COPY pip.conf /etc/pip.conf
+# COPY pip.conf /etc/pip.conf
 COPY requirements.txt .
 
 RUN --mount=type=cache,target=/root/.cache/pip \

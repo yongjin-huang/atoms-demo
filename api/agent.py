@@ -23,6 +23,7 @@ from typing import Iterator
 from anthropic import Anthropic
 from openai import OpenAI
 
+from models import User
 from providers import PROVIDERS, ModelSpec, api_key_for, find_model
 
 SENTINEL = "===APP==="
@@ -105,9 +106,9 @@ def _history_messages(turns: list[dict], previous_html: str | None) -> list[dict
     return msgs
 
 
-def _stream_call(spec: ModelSpec, messages: list[dict]) -> Iterator[tuple[str, str]]:
+def _stream_call(spec: ModelSpec, user: User, messages: list[dict]) -> Iterator[tuple[str, str]]:
     """Yield ("reason", text) and ("content", text) deltas."""
-    key = api_key_for(spec.provider)
+    key = api_key_for(spec.provider, user)
     if not key:
         raise AgentError(f"{PROVIDERS[spec.provider].label} is not configured.")
 
@@ -139,8 +140,8 @@ def _stream_call(spec: ModelSpec, messages: list[dict]) -> Iterator[tuple[str, s
             yield ("content", delta.content)
 
 
-def _non_streaming(spec: ModelSpec, messages: list[dict], extra: str) -> str:
-    key = api_key_for(spec.provider)
+def _non_streaming(spec: ModelSpec, user: User, messages: list[dict], extra: str) -> str:
+    key = api_key_for(spec.provider, user)
     if spec.provider == "anthropic":
         res = Anthropic(api_key=key).messages.create(
             model=spec.model, max_tokens=8000, system=SYSTEM + extra, messages=messages
@@ -158,6 +159,7 @@ def _non_streaming(spec: ModelSpec, messages: list[dict], extra: str) -> str:
 
 def converse(
     model_id: str,
+    user: User,
     prompt: str,
     turns: list[dict],
     previous_html: str | None = None,
@@ -172,7 +174,7 @@ def converse(
       ("chat_done", full_prose)
       ("code_done", full_html)   omitted entirely on a chat-only turn
     """
-    spec = find_model(model_id)
+    spec = find_model(model_id, user)
     if spec is None:
         raise AgentError("That model isn't available. Pick another.")
 
@@ -184,7 +186,7 @@ def converse(
     hold = ""  # the sentinel can arrive split across chunks
 
     try:
-        for kind, text in _stream_call(spec, messages):
+        for kind, text in _stream_call(spec, user, messages):
             if kind == "reason":
                 yield ("reason", text)
                 continue
@@ -238,6 +240,7 @@ def converse(
         try:
             raw = _non_streaming(
                 spec,
+                user,
                 messages,
                 "\n\nYour last reply was rejected. Reply with the prose, then the "
                 f"{SENTINEL} line, then the raw HTML document ONLY.",

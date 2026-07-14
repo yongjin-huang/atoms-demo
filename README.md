@@ -12,7 +12,7 @@ that produced them.
 cp .env.example .env.local
 npx auth secret                    # writes AUTH_SECRET
 openssl rand -hex 32               # paste into INTERNAL_API_KEY
-# add AUTH_GOOGLE_ID / AUTH_GOOGLE_SECRET and DEEPSEEK_API_KEY
+# add AUTH_GOOGLE_ID / AUTH_GOOGLE_SECRET
 docker compose up
 ```
 
@@ -81,14 +81,15 @@ deliberate trade. See `docs/ARCHITECTURE.md`.
   `/generate/stream`.
 - Persisted projects, message transcripts, generated versions, model ids, and
   optional reasoning text.
+- Per-user settings for default model and provider API keys.
 - Live SSE updates for reasoning, chat, source code, retry state, and completion.
 - Sandboxed iframe preview with a guarded partial renderer for in-progress HTML.
 
 ## Known gaps
 
-- **Schema is created with `create_all()` on startup.** Fine for a demo; a real
-  deployment gets Alembic. `create_all()` creates missing tables but does not
-  alter existing ones, so schema changes need migrations before real data.
+- **Schema is still demo-managed.** Startup creates missing tables and patches
+  the simple user-settings columns. A real deployment gets Alembic before real
+  data matters.
 - No multi-file generation, no npm packages in generated apps.
 - No sharing — every project is private to its owner.
 - No automated generated-app repair loop yet. A malformed HTML response gets one
@@ -110,7 +111,7 @@ Risks to call out honestly:
   multi-page projects.
 - Production deployment needs two services: Next.js plus FastAPI/Postgres.
   Environment variables must match across services, especially
-  `INTERNAL_API_KEY`, provider keys, Google OAuth callback URLs, and `API_URL`.
+  `INTERNAL_API_KEY`, Google OAuth callback URLs, and `API_URL`.
 - Schema migrations are not implemented. Demo databases can start fresh; a real
   deployment should add Alembic before evolving the schema.
 - The app validates generated HTML, but it does not execute tests inside the

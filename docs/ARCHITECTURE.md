@@ -66,6 +66,11 @@ erDiagram
     string email
     string name
     string image
+    string default_model_id
+    text deepseek_api_key
+    text openai_api_key
+    text anthropic_api_key
+    text openrouter_api_key
     datetime created_at
   }
 
@@ -108,6 +113,11 @@ erDiagram
 | `email` | `string \| null` | Unique | Latest email forwarded by Auth.js |
 | `name` | `string \| null` |  | Latest profile name |
 | `image` | `string \| null` |  | Latest profile image URL |
+| `default_model_id` | `string \| null` |  | User's preferred model |
+| `deepseek_api_key` | `text \| null` |  | User-provided DeepSeek key |
+| `openai_api_key` | `text \| null` |  | User-provided OpenAI key |
+| `anthropic_api_key` | `text \| null` |  | User-provided Anthropic key |
+| `openrouter_api_key` | `text \| null` |  | User-provided OpenRouter key |
 | `created_at` | `datetime` | Server default | First time the user reached FastAPI |
 
 #### `projects`
@@ -296,9 +306,9 @@ This is the seam. Any backend that satisfies it can serve the existing frontend.
 
 ### `GET /api/models`
 
-Which models are actually usable right now. The picker is built from this, so a
-provider with no API key configured simply doesn't appear — it can't be selected,
-so it can't fail at generate time.
+Which models are usable for the current user. The picker is built from this, so
+a provider with no user API key configured simply doesn't appear — it can't be
+selected, so it can't fail at generate time.
 
 | Field | Type | Meaning |
 |---|---|---|
@@ -312,6 +322,40 @@ so it can't fail at generate time.
 | `id` | `string` | Stable model id stored on versions/messages |
 | `label` | `string` | Human-readable picker label |
 | `provider` | `string` | Human-readable provider label |
+
+### `GET /api/settings`
+
+Returns the current user's demo settings. API keys are never echoed back; the
+response only tells the UI whether a key exists.
+
+| Field | Type | Meaning |
+|---|---|---|
+| `defaultModelId` | `string \| null` | Saved default model, normalized to an available model when possible |
+| `configured` | `boolean` | Whether at least one provider key exists |
+| `keys` | `KeyStatus` | Booleans for saved provider keys |
+| `models` | `ModelOut[]` | All known model choices, including unconfigured providers |
+
+`KeyStatus`
+
+| Field | Type | Meaning |
+|---|---|---|
+| `deepseek` | `boolean` | DeepSeek key has been saved |
+| `openai` | `boolean` | OpenAI key has been saved |
+| `anthropic` | `boolean` | Anthropic key has been saved |
+| `openrouter` | `boolean` | OpenRouter key has been saved |
+
+### `PUT /api/settings`
+
+Updates the current user's default model and any API keys included in the
+request. Blank or omitted key fields leave existing saved keys unchanged.
+
+| Field | Type | Required | Meaning |
+|---|---|---:|---|
+| `defaultModelId` | `string` | Yes | Preferred model id |
+| `deepseekApiKey` | `string` | No | New DeepSeek key |
+| `openaiApiKey` | `string` | No | New OpenAI key |
+| `anthropicApiKey` | `string` | No | New Anthropic key |
+| `openrouterApiKey` | `string` | No | New OpenRouter key |
 
 ### `POST /api/generate/stream`
 
@@ -424,9 +468,10 @@ attribute is the control.
 re-checks `user_id` against the session server-side. Never trust the id in the
 URL.
 
-**API keys are server-side only.** The browser never sees a provider key. It
-sends a `modelId`; the server resolves that to a provider, a base URL, and a key
-from the environment.
+**Provider keys are workbench-only settings, never generated-app inputs.** The
+user enters keys through the trusted workbench UI. They are stored on the user
+record and used only by FastAPI when calling providers. The generated iframe
+receives only HTML, never provider credentials.
 
 ---
 

@@ -10,7 +10,7 @@ from agent import AgentError, converse, title_from
 from db import SessionLocal, get_db
 from deps import current_user
 from models import Message, Project, User, Version
-from providers import DEFAULT_MODEL_ID
+from providers import default_model_for
 from schemas import GenerateIn, MessageOut, VersionOut
 
 router = APIRouter()
@@ -36,7 +36,9 @@ def generate_stream(
     if not prompt:
         raise HTTPException(400, "Say something.")
 
-    model_id = body.model_id or DEFAULT_MODEL_ID
+    model_id = body.model_id or default_model_for(user)
+    if not model_id:
+        raise HTTPException(400, "Open settings and add an API key before building.")
     user_id = user.id
     project_id = body.project_id
 
@@ -76,7 +78,7 @@ def generate_stream(
         html: str | None = None
 
         try:
-            for kind, payload in converse(model_id, prompt, turns, previous_html):
+            for kind, payload in converse(model_id, user, prompt, turns, previous_html):
                 if kind == "reason":
                     reasoning.append(payload)
                     yield _sse("reason", {"text": payload})
