@@ -71,6 +71,40 @@ export default function Workbench({
   const turnsRef = useRef<HTMLDivElement>(null);
   const codeRef = useRef<HTMLPreElement>(null);
 
+  // Streaming arrives faster than React should re-render. Chunks accumulate
+  // in a ref and flush to state at most once per animation frame — one state
+  // commit per frame instead of one per token. Without this, a 40KB document
+  // means hundreds of re-renders of an ever-growing text node.
+  const streamBuf = useRef({ reason: "", chat: "", code: "" });
+  const flushHandle = useRef<number | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
+
+  // Sticky scroll: auto-follow the stream only while the user is already at
+  // the bottom. Scrolling up to read must win over auto-follow.
+  const stickTurns = useRef(true);
+  const stickCode = useRef(true);
+
+  function flushStream() {
+    flushHandle.current = null;
+    const b = streamBuf.current;
+    if (b.reason) { const t = b.reason; b.reason = ""; setLiveReason((s) => s + t); }
+    if (b.chat)   { const t = b.chat;   b.chat = "";   setLiveChat((s) => s + t); }
+    if (b.code)   { const t = b.code;   b.code = "";   setLiveCode((s) => s + t); }
+  }
+
+  function queueStream(kind: "reason" | "chat" | "code", text: string) {
+    streamBuf.current[kind] += text;
+    if (flushHandle.current == null) {
+      flushHandle.current = requestAnimationFrame(flushStream);
+    }
+  }
+
+  function resetStream() {
+    if (flushHandle.current != null) cancelAnimationFrame(flushHandle.current);
+    flushHandle.current = null;
+    streamBuf.current = { reason: "", chat: "", code: "" };
+  }
+
   useEffect(() => {
     fetch("/api/projects")
       .then((r) => r.json())
@@ -102,12 +136,19 @@ export default function Workbench({
   }, []);
 
   useEffect(() => {
-    turnsRef.current?.scrollTo({ top: turnsRef.current.scrollHeight });
+    if (stickTurns.current) {
+      turnsRef.current?.scrollTo({ top: turnsRef.current.scrollHeight });
+    }
   }, [messages.length, pending, liveChat, liveReason]);
 
   useEffect(() => {
-    if (working) codeRef.current?.scrollTo({ top: codeRef.current.scrollHeight });
+    if (working && stickCode.current) {
+      codeRef.current?.scrollTo({ top: codeRef.current.scrollHeight });
+    }
   }, [liveCode, working]);
+
+  const nearBottom = (el: HTMLElement) =>
+    el.scrollHeight - el.scrollTop - el.clientHeight < 48;
 
   // Refresh the preview from the partial document, but not on every token —
   // an iframe reload per token would flicker and burn the main thread.
@@ -118,6 +159,13 @@ export default function Workbench({
   }, [liveCode]);
 
   const active = versions.find((v) => v.n === activeN);
+
+  // While streaming, render only the tail of the document. React re-commits
+  // the whole text node on every flush; keeping it small keeps frames cheap.
+  // The full source appears the moment the version lands.
+  const CODE_TAIL = 6000;
+  const codeTail = liveCode.length > CODE_TAIL ? liveCode.slice(-CODE_TAIL) : liveCode;
+  const codeHidden = Math.max(0, liveCode.length - CODE_TAIL);
   const labelFor = (id?: string | null) =>
     (id && models.find((m) => m.id === id)?.label) || id || "";
   const versionFor = (vid?: string | null) => versions.find((v) => v.id === vid);
@@ -169,12 +217,19 @@ export default function Workbench({
     setLiveCode("");
     setPreview(null);
     setReformatting(false);
+    resetStream();
+    stickTurns.current = true;
+    stickCode.current = true;
+
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
 
     try {
       const res = await fetch("/api/generate/stream", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ prompt: text, projectId, modelId }),
+        signal: ctrl.signal,
       });
 
       if (!res.ok || !res.body) {
@@ -203,14 +258,14 @@ export default function Workbench({
           if (!evt || raw === undefined) continue;
           const data = JSON.parse(raw || "{}");
 
-          if (evt === "reason") setLiveReason((s) => s + data.text);
-          else if (evt === "chat") setLiveChat((s) => s + data.text);
+          if (evt === "reason") queueStream("reason", data.text);
+          else if (evt === "chat") queueStream("chat", data.text);
           else if (evt === "code") {
             if (!sawCode) {
               sawCode = true;
               setTab("source"); // it started writing — show the code
             }
-            setLiveCode((s) => s + data.text);
+            queueStream("code", data.text);
           } else if (evt === "retry") setReformatting(true);
           else if (evt === "error") throw new Error(data.error);
           else if (evt === "done") done = data;
@@ -236,14 +291,25 @@ export default function Workbench({
       }
       setPending(null);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Something broke.");
+      if (e instanceof DOMException && e.name === "AbortError") {
+        // The user hit Stop. Not an error — put their prompt back and move on.
+        setError("Stopped.");
+      } else {
+        setError(e instanceof Error ? e.message : "Something broke.");
+      }
       setPrompt(text); // don't make them retype it
       setPending(null);
     } finally {
+      abortRef.current = null;
+      resetStream();
       setWorking(false);
       setReformatting(false);
       setPreview(null);
     }
+  }
+
+  function stop() {
+    abortRef.current?.abort();
   }
 
   function onKey(e: React.KeyboardEvent) {
@@ -293,7 +359,11 @@ export default function Workbench({
             </span>
           </div>
 
-          <div className="turns" ref={turnsRef}>
+          <div
+            className="turns"
+            ref={turnsRef}
+            onScroll={(e) => { stickTurns.current = nearBottom(e.currentTarget); }}
+          >
             {empty ? (
               <p className="turns-empty">
                 Say hello, or describe an app.
@@ -387,7 +457,6 @@ export default function Workbench({
               value={prompt}
               onChange={(e) => setPrompt(e.target.value)}
               onKeyDown={onKey}
-              disabled={working}
               placeholder={
                 empty
                   ? "Say hi, or: a pomodoro timer with a task list…"
@@ -413,9 +482,15 @@ export default function Workbench({
                 )}
               </select>
               <span className="hint">⌘↵</span>
-              <button className="build" onClick={send} disabled={working || !prompt.trim() || !modelId}>
-                {working ? "…" : "Send"}
-              </button>
+              {working ? (
+                <button type="button" className="stop" onClick={stop}>
+                  Stop
+                </button>
+              ) : (
+                <button className="build" onClick={send} disabled={!prompt.trim() || !modelId}>
+                  Send
+                </button>
+              )}
             </div>
           </div>
         </section>
@@ -443,8 +518,23 @@ export default function Workbench({
           </div>
 
           {tab === "source" ? (
-            <pre className={`source ${working ? "streaming" : ""}`} ref={codeRef}>
-              {working ? liveCode : active?.html ?? ""}
+            <pre
+              className={`source ${working ? "streaming" : ""}`}
+              ref={codeRef}
+              onScroll={(e) => { stickCode.current = nearBottom(e.currentTarget); }}
+            >
+              {working ? (
+                <>
+                  {codeHidden > 0 && (
+                    <span className="src-gap">
+                      … {codeHidden.toLocaleString()} chars above · showing the streaming tail
+                    </span>
+                  )}
+                  {codeTail}
+                </>
+              ) : (
+                active?.html ?? ""
+              )}
               {working && <span className="caret" />}
             </pre>
           ) : (

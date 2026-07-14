@@ -1,4 +1,4 @@
-.shell { position: relative; z-index: 1; display: flex; height: 100vh; overflow: hidden; }
+.shell { position: relative; z-index: 1; display: flex; height: 100vh; height: 100dvh; overflow: hidden; }
 
 /* ---- project rail ---- */
 .rail {
@@ -33,7 +33,14 @@
 .who-out:hover { color: var(--plot); }
 
 /* ---- two columns: conversation | stage ---- */
-.work { flex: 1; display: grid; grid-template-columns: 400px 1fr; min-width: 0; }
+.work {
+  flex: 1; display: grid; grid-template-columns: 400px 1fr;
+  /* One explicit row pinned to the container. Without this the implicit row
+     is auto-sized by content, so streaming code grows the row past the
+     viewport, .shell{overflow:hidden} clips it, and the prompt bar vanishes. */
+  grid-template-rows: minmax(0, 1fr);
+  min-width: 0;
+}
 
 /* ---- conversation ---- */
 .convo {
@@ -103,9 +110,14 @@
   padding: 8px 15px; border-radius: 6px;
 }
 .build:hover:not(:disabled) { filter: brightness(1.08); }
+.stop {
+  background: transparent; color: var(--plot); font-weight: 600; font-size: 12.5px;
+  padding: 8px 15px; border-radius: 6px; border: 1px solid var(--plot);
+}
+.stop:hover { background: rgba(255,107,74,0.1); }
 
 /* ---- stage ---- */
-.stage { display: flex; flex-direction: column; min-width: 0; padding: 22px 24px; gap: 12px; }
+.stage { display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; padding: 22px 24px; gap: 12px; }
 .stage-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .stage-title { font-family: var(--mono); font-size: 11px; color: var(--muted); }
 .tabs { display: flex; gap: 4px; }
@@ -139,6 +151,11 @@
   white-space: pre-wrap; word-break: break-word; min-height: 0;
 }
 .source.streaming { border-color: rgba(255,107,74,0.4); }
+.src-gap {
+  display: block; margin-bottom: 8px;
+  font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--muted);
+}
 .caret {
   display: inline-block; width: 7px; height: 13px; background: var(--plot);
   vertical-align: text-bottom; animation: p 1s step-end infinite;
@@ -156,7 +173,7 @@
 @media (max-width: 1000px) {
   .shell { flex-direction: column; height: auto; overflow: visible; }
   .rail { width: 100%; border-right: none; border-bottom: 1px solid var(--line); }
-  .work { grid-template-columns: 1fr; }
+  .work { grid-template-columns: 1fr; grid-template-rows: auto auto; }
   .convo { border-right: none; border-bottom: 1px solid var(--line); }
   .turns { max-height: 300px; }
   .bed, .source { min-height: 420px; }
