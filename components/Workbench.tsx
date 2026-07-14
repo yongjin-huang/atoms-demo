@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { renderablePartial } from "@/lib/preview";
+import { useGenerationStream } from "./useGenerationStream";
 import "./workbench.css";
 
 type FileEntry = { path: string; content: string };
@@ -69,8 +70,7 @@ export default function Workbench({
   const [tab, setTab] = useState<"preview" | "source">("preview");
   const [openThoughts, setOpenThoughts] = useState<Record<string, boolean>>({});
 
-  // live turn
-  const [working, setWorking] = useState(false);
+  // live turn (the generation itself runs server-side; see useGenerationStream)
   const [pending, setPending] = useState<string | null>(null);
   const [liveReason, setLiveReason] = useState("");
   const [liveChat, setLiveChat] = useState("");
@@ -89,7 +89,6 @@ export default function Workbench({
   // means hundreds of re-renders of an ever-growing text node.
   const streamBuf = useRef({ reason: "", chat: "", code: "" });
   const flushHandle = useRef<number | null>(null);
-  const abortRef = useRef<AbortController | null>(null);
 
   // Sticky scroll: auto-follow the stream only while the user is already at
   // the bottom. Scrolling up to read must win over auto-follow.
@@ -116,6 +115,102 @@ export default function Workbench({
     flushHandle.current = null;
     streamBuf.current = { reason: "", chat: "", code: "" };
   }
+
+  const pendingRef = useRef("");   // the prompt of the in-flight turn
+  const sawCodeRef = useRef(false);
+
+  function beginTurn(text: string) {
+    setError(null);
+    setPending(text);
+    setPrompt("");
+    setLiveReason("");
+    setLiveChat("");
+    setLiveCode("");
+    setLiveFile("");
+    setLiveDone([]);
+    setPreview(null);
+    setReformatting(false);
+    resetStream();
+    sawCodeRef.current = false;
+    stickTurns.current = true;
+    stickCode.current = true;
+    pendingRef.current = text;
+  }
+
+  function endTurn() {
+    resetStream();
+    setReformatting(false);
+    setPreview(null);
+  }
+
+  // Every generation event — whether streamed live or replayed after a
+  // reconnect — lands here. Replay rebuilds the live UI for free.
+  function handleEvent(evt: string, data: any) {
+    if (evt === "reason") queueStream("reason", data.text);
+    else if (evt === "chat") queueStream("chat", data.text);
+    else if (evt === "file_open") {
+      if (!sawCodeRef.current) {
+        sawCodeRef.current = true;
+        setTab("source"); // it started writing — show the code
+      }
+      flushStream(); // drain any buffered content for the previous file
+      setLiveFile(data.path);
+      setLiveCode("");
+    } else if (evt === "code") queueStream("code", data.text);
+    else if (evt === "file_close") {
+      flushStream();
+      setLiveDone((d) => [...d, data.path]);
+    } else if (evt === "retry") setReformatting(true);
+    else if (evt === "stopped") {
+      setError("Stopped.");
+      setPrompt(pendingRef.current); // don't make them retype it
+      setPending(null);
+      endTurn();
+    } else if (evt === "error") {
+      setError(data.error ?? "Something broke.");
+      setPrompt(pendingRef.current);
+      setPending(null);
+      endTurn();
+    } else if (evt === "done") {
+      endTurn();
+      if (!projectId) {
+        router.push(`/p/${data.projectId}`);
+        return;
+      }
+      setMessages((ms) => [
+        ...ms,
+        { id: `${data.message.id}-u`, role: "user", content: pendingRef.current },
+        data.message,
+      ]);
+      if (data.version) {
+        setVersions((vs) => [...vs, data.version]);
+        setActiveN(data.version.n);
+        setTab("preview");
+      }
+      setPending(null);
+    }
+  }
+
+  const gen = useGenerationStream(handleEvent);
+  const working = gen.working;
+
+  // Reattach to a generation that kept running while this page was away —
+  // switching conversations no longer kills a build.
+  useEffect(() => {
+    fetch("/api/generations/active")
+      .then((r) => (r.ok ? r.json() : []))
+      .then((list: { id: string; projectId: string | null; prompt: string }[]) => {
+        const mine = list.find((g) => g.projectId === (projectId ?? null));
+        if (!mine) return;
+        beginTurn(mine.prompt);
+        gen.resume(mine.id).catch(() => {
+          setError("Lost track of the running build — reload to check.");
+          setPending(null);
+        });
+      })
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     fetch("/api/projects")
@@ -232,118 +327,21 @@ export default function Workbench({
   async function send() {
     const text = prompt.trim();
     if (!text || working) return;
-
-    setWorking(true);
-    setError(null);
-    setPending(text);
-    setPrompt("");
-    setLiveReason("");
-    setLiveChat("");
-    setLiveCode("");
-    setLiveFile("");
-    setLiveDone([]);
-    setPreview(null);
-    setReformatting(false);
-    resetStream();
-    stickTurns.current = true;
-    stickCode.current = true;
-
-    const ctrl = new AbortController();
-    abortRef.current = ctrl;
-
+    beginTurn(text);
     try {
-      const res = await fetch("/api/generate/stream", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt: text, projectId, modelId }),
-        signal: ctrl.signal,
-      });
-
-      if (!res.ok || !res.body) {
-        const d = await res.json().catch(() => ({}));
-        throw new Error(d.error ?? "That didn't work.");
-      }
-
-      // SSE by hand: EventSource can't POST, and we need a request body.
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-      let done: { projectId: string; message: Message; version: Version | null } | null = null;
-      let sawCode = false;
-
-      while (true) {
-        const { value, done: finished } = await reader.read();
-        if (finished) break;
-        buffer += decoder.decode(value, { stream: true });
-
-        const frames = buffer.split("\n\n");
-        buffer = frames.pop() ?? "";
-
-        for (const frame of frames) {
-          const evt = /^event: (.+)$/m.exec(frame)?.[1];
-          const raw = /^data: (.*)$/m.exec(frame)?.[1];
-          if (!evt || raw === undefined) continue;
-          const data = JSON.parse(raw || "{}");
-
-          if (evt === "reason") queueStream("reason", data.text);
-          else if (evt === "chat") queueStream("chat", data.text);
-          else if (evt === "file_open") {
-            if (!sawCode) {
-              sawCode = true;
-              setTab("source"); // it started writing — show the code
-            }
-            flushStream(); // drain any buffered content for the previous file
-            setLiveFile(data.path);
-            setLiveCode("");
-          } else if (evt === "code") {
-            queueStream("code", data.text);
-          } else if (evt === "file_close") {
-            flushStream();
-            setLiveDone((d) => [...d, data.path]);
-          } else if (evt === "retry") setReformatting(true);
-          else if (evt === "error") throw new Error(data.error);
-          else if (evt === "done") done = data;
-        }
-      }
-
-      if (!done) throw new Error("The connection dropped before the reply finished.");
-
-      if (!projectId) {
-        router.push(`/p/${done.projectId}`);
-        return;
-      }
-
-      setMessages((ms) => [
-        ...ms,
-        { id: `${done.message.id}-u`, role: "user", content: text },
-        done.message,
-      ]);
-      if (done.version) {
-        setVersions((vs) => [...vs, done.version!]);
-        setActiveN(done.version.n);
-        setTab("preview");
-      }
-      setPending(null);
+      // Resolves when the generation reaches a terminal event. All UI
+      // updates happen in handleEvent; this only reports transport failures.
+      await gen.start({ prompt: text, projectId, modelId });
     } catch (e) {
-      if (e instanceof DOMException && e.name === "AbortError") {
-        // The user hit Stop. Not an error — put their prompt back and move on.
-        setError("Stopped.");
-      } else {
-        setError(e instanceof Error ? e.message : "Something broke.");
-      }
-      setPrompt(text); // don't make them retype it
+      setError(e instanceof Error ? e.message : "Something broke.");
+      setPrompt(text);
       setPending(null);
-    } finally {
-      abortRef.current = null;
-      resetStream();
-      setWorking(false);
-      setReformatting(false);
-      setPreview(null);
+      endTurn();
     }
   }
 
   function stop() {
-    abortRef.current?.abort();
+    gen.stop(); // a server-side cancel — the confirming event ends the turn
   }
 
   function onKey(e: React.KeyboardEvent) {

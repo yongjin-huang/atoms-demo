@@ -3,7 +3,10 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from db import Base, engine
-from routes import models, projects, settings, stream
+import asyncio
+
+from generations import registry
+from routes import generations, models, projects, settings
 
 
 @asynccontextmanager
@@ -13,7 +16,9 @@ async def lifespan(_: FastAPI):
     # volume:  docker compose down -v && docker compose up
     # Alembic arrives with the first real deployment.
     Base.metadata.create_all(bind=engine)
+    reaper = asyncio.create_task(registry.reap_forever())
     yield
+    reaper.cancel()
 
 
 # No CORS, deliberately. Only the Next BFF talks to this, server-to-server.
@@ -22,7 +27,7 @@ app = FastAPI(title="atoms-demo api", lifespan=lifespan)
 app.include_router(models.router)
 app.include_router(projects.router)
 app.include_router(settings.router)
-app.include_router(stream.router)
+app.include_router(generations.router)
 
 
 @app.get("/health")

@@ -53,7 +53,7 @@ export function normalise(data: unknown) {
  * hand its body straight to the browser — no buffering, no re-encoding. The
  * session check still happens here, server-side, before a single byte moves.
  */
-export async function apiStream(path: string, body: string) {
+export async function apiStream(path: string, init: { method?: string; body?: string } = {}) {
   const session = await auth();
   if (!session?.user?.id) return null;
 
@@ -67,5 +67,10 @@ export async function apiStream(path: string, body: string) {
   if (u.name) headers["X-User-Name"] = encodeURIComponent(u.name);
   if (u.image) headers["X-User-Image"] = encodeURIComponent(u.image);
 
-  return fetch(`${API_URL}${path}`, { method: "POST", headers, body, cache: "no-store" });
+  return fetch(`${API_URL}${path}`, {
+    method: init.method ?? "GET",
+    headers,
+    body: init.body,
+    cache: "no-store",
+  });
 }
