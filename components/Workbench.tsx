@@ -5,7 +5,17 @@ import { useRouter } from "next/navigation";
 import { renderablePartial } from "@/lib/preview";
 import "./workbench.css";
 
-type Version = { id: string; n: number; prompt: string; html: string; modelId: string };
+type FileEntry = { path: string; content: string };
+type Manifest = { template: string; delete?: string[] };
+type Version = {
+  id: string;
+  n: number;
+  prompt: string;
+  runtime: "srcdoc" | "sandbox";
+  manifest: Manifest;
+  files: FileEntry[];
+  modelId: string;
+};
 type Message = {
   id: string;
   role: "user" | "assistant";
@@ -64,7 +74,9 @@ export default function Workbench({
   const [pending, setPending] = useState<string | null>(null);
   const [liveReason, setLiveReason] = useState("");
   const [liveChat, setLiveChat] = useState("");
-  const [liveCode, setLiveCode] = useState("");
+  const [liveCode, setLiveCode] = useState("");     // content of the file being written
+  const [liveFile, setLiveFile] = useState("");     // its path
+  const [liveDone, setLiveDone] = useState<string[]>([]); // paths already completed
   const [reformatting, setReformatting] = useState(false);
   const [preview, setPreview] = useState<string | null>(null);
 
@@ -151,14 +163,27 @@ export default function Workbench({
     el.scrollHeight - el.scrollTop - el.clientHeight < 48;
 
   // Refresh the preview from the partial document, but not on every token —
-  // an iframe reload per token would flicker and burn the main thread.
+  // an iframe reload per token would flicker and burn the main thread. Only
+  // index.html can be previewed mid-stream; other files just scroll by.
   useEffect(() => {
-    if (!liveCode) return;
+    if (!liveCode || liveFile !== "index.html") return;
     const t = setTimeout(() => setPreview(renderablePartial(liveCode)), 400);
     return () => clearTimeout(t);
-  }, [liveCode]);
+  }, [liveCode, liveFile]);
 
   const active = versions.find((v) => v.n === activeN);
+  const htmlOf = (v?: Version) =>
+    v?.files.find((f) => f.path === "index.html")?.content ?? "";
+
+  // Which file the source tab shows when idle. Defaults to index.html.
+  const [srcPath, setSrcPath] = useState<string>("index.html");
+  useEffect(() => {
+    if (!active) return;
+    if (!active.files.some((f) => f.path === srcPath)) {
+      setSrcPath(active.files.find((f) => f.path === "index.html")?.path ?? active.files[0]?.path ?? "");
+    }
+  }, [activeN, versions]); // eslint-disable-line react-hooks/exhaustive-deps
+  const srcContent = active?.files.find((f) => f.path === srcPath)?.content ?? "";
 
   // While streaming, render only the tail of the document. React re-commits
   // the whole text node on every flush; keeping it small keeps frames cheap.
@@ -215,6 +240,8 @@ export default function Workbench({
     setLiveReason("");
     setLiveChat("");
     setLiveCode("");
+    setLiveFile("");
+    setLiveDone([]);
     setPreview(null);
     setReformatting(false);
     resetStream();
@@ -260,12 +287,19 @@ export default function Workbench({
 
           if (evt === "reason") queueStream("reason", data.text);
           else if (evt === "chat") queueStream("chat", data.text);
-          else if (evt === "code") {
+          else if (evt === "file_open") {
             if (!sawCode) {
               sawCode = true;
               setTab("source"); // it started writing — show the code
             }
+            flushStream(); // drain any buffered content for the previous file
+            setLiveFile(data.path);
+            setLiveCode("");
+          } else if (evt === "code") {
             queueStream("code", data.text);
+          } else if (evt === "file_close") {
+            flushStream();
+            setLiveDone((d) => [...d, data.path]);
           } else if (evt === "retry") setReformatting(true);
           else if (evt === "error") throw new Error(data.error);
           else if (evt === "done") done = data;
@@ -432,13 +466,14 @@ export default function Workbench({
                           </div>
                         )
                       )}
-                      {liveCode && (
+                      {(liveCode || liveFile) && (
                         <div className="built pending">
                           <span className="built-v">
                             <span className="pulse" />
-                            {reformatting ? "Reformatting…" : "Writing the app…"}
+                            {reformatting ? "Reformatting…" : `Writing ${liveFile || "the app"}…`}
                           </span>
                           <span className="built-meta">
+                            {liveDone.length > 0 && `${liveDone.length} file${liveDone.length > 1 ? "s" : ""} done · `}
                             {liveCode.length.toLocaleString()} chars
                           </span>
                         </div>
@@ -518,25 +553,42 @@ export default function Workbench({
           </div>
 
           {tab === "source" ? (
-            <pre
-              className={`source ${working ? "streaming" : ""}`}
-              ref={codeRef}
-              onScroll={(e) => { stickCode.current = nearBottom(e.currentTarget); }}
-            >
-              {working ? (
-                <>
-                  {codeHidden > 0 && (
-                    <span className="src-gap">
-                      … {codeHidden.toLocaleString()} chars above · showing the streaming tail
-                    </span>
-                  )}
-                  {codeTail}
-                </>
-              ) : (
-                active?.html ?? ""
+            <>
+              {!working && active && active.files.length > 1 && (
+                <select
+                  className="picker src-picker"
+                  value={srcPath}
+                  onChange={(e) => setSrcPath(e.target.value)}
+                  aria-label="File"
+                >
+                  {active.files.map((f) => (
+                    <option key={f.path} value={f.path}>{f.path}</option>
+                  ))}
+                </select>
               )}
-              {working && <span className="caret" />}
-            </pre>
+              <pre
+                className={`source ${working ? "streaming" : ""}`}
+                ref={codeRef}
+                onScroll={(e) => { stickCode.current = nearBottom(e.currentTarget); }}
+              >
+                {working ? (
+                  <>
+                    {(liveFile || codeHidden > 0) && (
+                      <span className="src-gap">
+                        {liveFile && `${liveFile} · `}
+                        {codeHidden > 0
+                          ? `… ${codeHidden.toLocaleString()} chars above · streaming tail`
+                          : "streaming"}
+                      </span>
+                    )}
+                    {codeTail}
+                  </>
+                ) : (
+                  srcContent
+                )}
+                {working && <span className="caret" />}
+              </pre>
+            </>
           ) : (
             <div className="bed">
               <span className="crop-bl" />
@@ -559,13 +611,23 @@ export default function Workbench({
                   </div>
                 )
               ) : active ? (
-                <iframe
-                  key={active.id}
-                  className="frame"
-                  srcDoc={active.html}
-                  sandbox="allow-scripts allow-forms allow-modals"
-                  title={`Version ${active.n}`}
-                />
+                active.runtime === "srcdoc" ? (
+                  <iframe
+                    key={active.id}
+                    className="frame"
+                    srcDoc={htmlOf(active)}
+                    sandbox="allow-scripts allow-forms allow-modals"
+                    title={`Version ${active.n}`}
+                  />
+                ) : (
+                  <div className="bed-empty">
+                    <h2>Sandbox runtime</h2>
+                    <p>
+                      This version's template ({active.manifest.template}) runs in a
+                      server sandbox — arriving in the next phase.
+                    </p>
+                  </div>
+                )
               ) : (
                 <div className="bed-empty">
                   <h2>Nothing running</h2>

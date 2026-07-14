@@ -5,13 +5,22 @@ from datetime import datetime
 from pydantic import BaseModel, ConfigDict, Field
 
 
+class FileOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+    path: str
+    content: str
+
+
 class VersionOut(BaseModel):
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
     id: str
     n: int
     prompt: str
-    html: str
+    runtime: str
+    manifest: dict
+    files: list[FileOut]
     model_id: str = Field(serialization_alias="modelId")
     created_at: datetime = Field(serialization_alias="createdAt")
 

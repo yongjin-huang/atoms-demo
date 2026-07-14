@@ -151,6 +151,7 @@
   white-space: pre-wrap; word-break: break-word; min-height: 0;
 }
 .source.streaming { border-color: rgba(255,107,74,0.4); }
+.src-picker { align-self: flex-start; }
 .src-gap {
   display: block; margin-bottom: 8px;
   font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase;

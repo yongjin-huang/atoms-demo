@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from db import get_db
 from deps import current_user
@@ -34,7 +34,10 @@ def get_project(
         raise HTTPException(404, "Not found.")
 
     versions = db.scalars(
-        select(Version).where(Version.project_id == project_id).order_by(Version.n)
+        select(Version)
+        .where(Version.project_id == project_id)
+        .options(selectinload(Version.files))  # one query, not one per version
+        .order_by(Version.n)
     ).all()
     messages = db.scalars(
         select(Message).where(Message.project_id == project_id).order_by(Message.created_at)

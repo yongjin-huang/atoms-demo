@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import String, Text, Integer, DateTime, ForeignKey, func
+from sqlalchemy import JSON, String, Text, Integer, DateTime, ForeignKey, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from db import Base
@@ -58,7 +58,12 @@ class Project(Base):
 
 
 class Version(Base):
-    """A built app. Append-only. Not every turn produces one."""
+    """A built app: a manifest plus a complete file snapshot. Append-only.
+    Not every turn produces one.
+
+    Revisions are merged server-side (protocol.merge_files), so every version
+    is self-contained — rollback is "load version N", nothing to replay.
+    """
 
     __tablename__ = "versions"
 
@@ -68,11 +73,33 @@ class Version(Base):
     )
     n: Mapped[int] = mapped_column(Integer)
     prompt: Mapped[str] = mapped_column(Text)
-    html: Mapped[str] = mapped_column(Text)
+    runtime: Mapped[str] = mapped_column(String, default="srcdoc")  # "srcdoc" | "sandbox"
+    manifest: Mapped[dict] = mapped_column(JSON)
     model_id: Mapped[str] = mapped_column(String)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     project: Mapped[Project] = relationship(back_populates="versions")
+    files: Mapped[list["File"]] = relationship(
+        back_populates="version", cascade="all, delete-orphan", order_by="File.path"
+    )
+
+
+class File(Base):
+    """One file of one version. Full snapshot per version — storage-simple,
+    reconstruction-free. Content-addressed dedup can come later if it ever
+    matters; it does not yet."""
+
+    __tablename__ = "files"
+    __table_args__ = (UniqueConstraint("version_id", "path"),)
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    version_id: Mapped[str] = mapped_column(
+        ForeignKey("versions.id", ondelete="CASCADE"), index=True
+    )
+    path: Mapped[str] = mapped_column(String)
+    content: Mapped[str] = mapped_column(Text)
+
+    version: Mapped[Version] = relationship(back_populates="files")
 
 
 class Message(Base):

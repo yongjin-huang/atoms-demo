@@ -69,9 +69,10 @@ deliberate trade. See `docs/ARCHITECTURE.md`.
 | `components/` | Workbench and sign-in UI |
 | `lib/api.ts` | Server-only path from Next to FastAPI |
 | `auth.ts` | Google sign-in with Auth.js JWT sessions |
-| `api/agent.py` | Streams the model, splits chat/code, extracts HTML, retries once |
+| `api/agent.py` | Streams the model, drives protocol v2, retries once on violations |
+| `api/protocol.py` | Pure protocol core: parser, templates, validation, revision merge |
 | `api/providers.py` | Provider/model registry |
-| `api/models.py` | SQLAlchemy schema: users, projects, versions, messages |
+| `api/models.py` | SQLAlchemy schema: users, projects, versions, files, messages |
 | `docs/` | Architecture and backend decision notes |
 
 ## Current status
@@ -87,10 +88,13 @@ deliberate trade. See `docs/ARCHITECTURE.md`.
 
 ## Known gaps
 
-- **Schema is still demo-managed.** Startup creates missing tables and patches
-  the simple user-settings columns. A real deployment gets Alembic before real
-  data matters.
-- No multi-file generation, no npm packages in generated apps.
+- **Schema is create_all-on-fresh-DB.** Nothing is in production, so schema
+  changes mean `docker compose down -v && docker compose up`. Alembic arrives
+  with the first real deployment.
+- Multi-file generation is wired end to end (manifest + files protocol,
+  per-version file snapshots, copy-on-write revisions), but only the `static`
+  template is enabled until the sandbox engine lands — see
+  `docs/SANDBOX-DESIGN.md`. No npm packages in generated apps yet.
 - No sharing — every project is private to its owner.
 - No automated generated-app repair loop yet. A malformed HTML response gets one
   strict retry, but runtime errors are left for the user to revise.

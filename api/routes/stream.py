@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from agent import AgentError, converse, title_from
 from db import SessionLocal, get_db
 from deps import current_user
-from models import Message, Project, User, Version
+from models import File, Message, Project, User, Version
 from providers import default_model_for
 from schemas import GenerateIn, MessageOut, VersionOut
 
@@ -43,7 +43,7 @@ def generate_stream(
     project_id = body.project_id
 
     turns: list[dict] = []
-    previous_html: str | None = None
+    previous_files: dict[str, str] | None = None
     next_n = 1
 
     if project_id:
@@ -69,29 +69,35 @@ def generate_stream(
             .limit(1)
         )
         if latest is not None:
-            previous_html = latest.html
+            previous_files = {f.path: f.content for f in latest.files}
             next_n = latest.n + 1
 
     def events() -> Iterator[str]:
         reasoning: list[str] = []
         chat = ""
-        html: str | None = None
+        build: dict | None = None  # {"manifest", "runtime", "files"} — merged snapshot
 
         try:
-            for kind, payload in converse(model_id, user, prompt, turns, previous_html):
+            for kind, payload in converse(model_id, user, prompt, turns, previous_files):
                 if kind == "reason":
                     reasoning.append(payload)
                     yield _sse("reason", {"text": payload})
                 elif kind == "chat":
                     yield _sse("chat", {"text": payload})
+                elif kind == "manifest":
+                    yield _sse("manifest", payload)
+                elif kind == "file_open":
+                    yield _sse("file_open", {"path": payload})
                 elif kind == "code":
                     yield _sse("code", {"text": payload})
+                elif kind == "file_close":
+                    yield _sse("file_close", {"path": payload})
                 elif kind == "retry":
                     yield _sse("retry", {})
                 elif kind == "chat_done":
                     chat = payload
-                elif kind == "code_done":
-                    html = payload
+                elif kind == "build_done":
+                    build = payload
         except AgentError as e:
             yield _sse("error", {"error": str(e)})
             return
@@ -113,10 +119,18 @@ def generate_stream(
                 s.add(Message(project_id=pid, role="user", content=prompt))
 
                 version = None
-                if html is not None:
+                if build is not None:
                     version = Version(
-                        project_id=pid, n=next_n, prompt=prompt, html=html, model_id=model_id
+                        project_id=pid,
+                        n=next_n,
+                        prompt=prompt,
+                        runtime=build["runtime"],
+                        manifest=build["manifest"],
+                        model_id=model_id,
                     )
+                    version.files = [
+                        File(path=p, content=c) for p, c in sorted(build["files"].items())
+                    ]
                     s.add(version)
                     s.flush()
 
