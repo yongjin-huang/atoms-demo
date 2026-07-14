@@ -2,10 +2,11 @@
 
 ## The product in one paragraph
 
-A user describes an app in a sentence. An agent writes it as a single
-self-contained HTML document. It runs immediately in a sandboxed iframe. The
-user can revise it in place; every revision is kept as a numbered version they
-can jump back to, tagged with which model produced it.
+A user describes an app, asks a question, or revises an existing build. The
+agent answers conversationally first. If a build is warranted, it then streams a
+single self-contained HTML document into the UI, where it runs in a sandboxed
+iframe. The transcript and every generated version are persisted; versions stay
+numbered and tagged with the model that produced them.
 
 ---
 
@@ -20,6 +21,17 @@ provision, secure, and keep alive.
 Constraining the agent to one HTML file with inlined CSS and JS means the
 "runtime" is an `<iframe srcdoc>` with a `sandbox` attribute. The browser is the
 sandbox. Nothing to operate.
+
+```mermaid
+flowchart LR
+  Prompt["User prompt"]
+  Agent["Agent response"]
+  HTML["Single HTML document\ninline CSS + JS"]
+  Frame["Sandboxed iframe\nsrcdoc"]
+  App["Interactive generated app"]
+
+  Prompt --> Agent --> HTML --> Frame --> App
+```
 
 | | Multi-file + container | Single HTML file |
 |---|---|---|
@@ -39,43 +51,98 @@ Everything below is downstream of this.
 
 ## 2. Data model
 
-Four auth tables (owned by the auth library) and two product tables.
+Auth.js owns no database tables. It keeps a signed JWT session cookie and
+forwards the Google `sub` claim to FastAPI. FastAPI owns four tables:
 
+```mermaid
+erDiagram
+  USERS ||--o{ PROJECTS : owns
+  PROJECTS ||--o{ VERSIONS : has
+  PROJECTS ||--o{ MESSAGES : records
+  VERSIONS ||--o{ MESSAGES : "may be referenced by"
+
+  USERS {
+    string id PK
+    string email
+    string name
+    string image
+    datetime created_at
+  }
+
+  PROJECTS {
+    string id PK
+    string user_id FK
+    string title
+    datetime created_at
+  }
+
+  VERSIONS {
+    string id PK
+    string project_id FK
+    int n
+    text prompt
+    text html
+    string model_id
+    datetime created_at
+  }
+
+  MESSAGES {
+    string id PK
+    string project_id FK
+    string role
+    text content
+    text reasoning
+    string model_id
+    string version_id FK
+    datetime created_at
+  }
 ```
-┌──────────────┐
-│ user         │   Google identity. One row per person.
-│──────────────│
-│ id      (PK) │
-│ email        │
-│ name         │
-│ image        │
-└──────┬───────┘
-       │ 1
-       │
-       │ N
-┌──────▼─────────────┐
-│ projects           │   One app the user is building.
-│────────────────────│
-│ id          (PK)   │
-│ user_id     (FK)   │──► user.id      ON DELETE CASCADE
-│ title              │   derived from the first prompt
-│ created_at         │
-└──────┬─────────────┘
-       │ 1
-       │
-       │ N
-┌──────▼─────────────┐
-│ versions           │   One generation. Append-only.
-│────────────────────│
-│ id          (PK)   │
-│ project_id  (FK)   │──► projects.id  ON DELETE CASCADE
-│ n                  │   1, 2, 3… monotonic within a project
-│ prompt             │   what was asked at this step
-│ html               │   the generated document
-│ model_id           │   e.g. "deepseek/deepseek-chat"
-│ created_at         │
-└────────────────────┘
-```
+
+### Schema Tables
+
+#### `users`
+
+| Column | Type | Constraints | Meaning |
+|---|---|---|---|
+| `id` | `string` | Primary key | Stable Google `sub` claim |
+| `email` | `string \| null` | Unique | Latest email forwarded by Auth.js |
+| `name` | `string \| null` |  | Latest profile name |
+| `image` | `string \| null` |  | Latest profile image URL |
+| `created_at` | `datetime` | Server default | First time the user reached FastAPI |
+
+#### `projects`
+
+| Column | Type | Constraints | Meaning |
+|---|---|---|---|
+| `id` | `string` | Primary key | Build/conversation id |
+| `user_id` | `string` | Foreign key to `users.id`, indexed, cascade delete | Owner |
+| `title` | `string` |  | Derived from the first prompt |
+| `created_at` | `datetime` | Server default | Project creation time |
+
+#### `versions`
+
+| Column | Type | Constraints | Meaning |
+|---|---|---|---|
+| `id` | `string` | Primary key | Version id |
+| `project_id` | `string` | Foreign key to `projects.id`, indexed, cascade delete | Owning project |
+| `n` | `integer` | Monotonic within project | User-facing version number |
+| `prompt` | `text` |  | Prompt that produced this version |
+| `html` | `text` |  | Complete generated HTML document |
+| `model_id` | `string` |  | Model that produced the version |
+| `created_at` | `datetime` | Server default | Version creation time |
+
+#### `messages`
+
+| Column | Type | Constraints | Meaning |
+|---|---|---|---|
+| `id` | `string` | Primary key | Message id |
+| `project_id` | `string` | Foreign key to `projects.id`, indexed, cascade delete | Owning project |
+| `role` | `string` | `"user"` or `"assistant"` | Speaker |
+| `content` | `text` |  | Visible prose |
+| `reasoning` | `text \| null` |  | Optional provider reasoning channel |
+| `model_id` | `string \| null` |  | Assistant turn model id |
+| `version_id` | `string \| null` | Foreign key to `versions.id`, set null on delete | Generated version for this turn, if any |
+| `created_at` | `datetime` | Server default | Message creation time |
 
 ### Why it's shaped this way
 
@@ -103,6 +170,11 @@ and compare. A UI-only model setting cannot do this.
 they've seen it. The first prompt, truncated, is a good enough label — and it's
 one less field between intent and result.
 
+**`messages` exists because not every turn produces an app.** A greeting or a
+question should be a real persisted turn, not a failed generation. Assistant
+messages can point at the version they produced, but the transcript remains the
+source of truth for conversation.
+
 ### What's deliberately absent
 
 - **No `deleted_at`.** Nothing is deleted in the demo.
@@ -118,33 +190,22 @@ one less field between intent and result.
 
 ### A. Sign in
 
-```
-Browser              Next.js               Google              DB
-  │                     │                     │                 │
-  │  GET /              │                     │                 │
-  ├────────────────────►│                     │                 │
-  │                     │ auth() → no session │                 │
-  │  ◄── sign-in gate ──┤                     │                 │
-  │                     │                     │                 │
-  │  "Continue with     │                     │                 │
-  │   Google" (form)    │                     │                 │
-  ├────────────────────►│                     │                 │
-  │                     │  redirect to Google │                 │
-  │  ─────────────────────────────────────────►                 │
-  │                     │                     │                 │
-  │  ◄── consent screen ──────────────────────┤                 │
-  │  approve                                  │                 │
-  ├───────────────────────────────────────────►                 │
-  │                     │                     │                 │
-  │   /api/auth/callback/google?code=…        │                 │
-  ├────────────────────►│                     │                 │
-  │                     │ exchange code       │                 │
-  │                     ├────────────────────►│                 │
-  │                     │ ◄── id_token ───────┤                 │
-  │                     │                     │                 │
-  │                     │ upsert user, create session           │
-  │                     ├──────────────────────────────────────►│
-  │  ◄── redirect / + session cookie ─────────┤                 │
+```mermaid
+sequenceDiagram
+  participant B as Browser
+  participant N as Next.js / Auth.js
+  participant G as Google OAuth
+
+  B->>N: GET /
+  N-->>B: Sign-in gate
+  B->>N: Continue with Google
+  N-->>B: Redirect to Google
+  B->>G: Approve consent
+  G-->>B: Redirect to /api/auth/callback/google?code=...
+  B->>N: Callback with code
+  N->>G: Exchange code
+  G-->>N: ID token with Google sub
+  N-->>B: Redirect / with signed httpOnly session cookie
 ```
 
 The session cookie is `httpOnly`. The browser never handles a token; every
@@ -152,61 +213,66 @@ subsequent request carries the cookie automatically.
 
 ### B. Build an app (the core loop)
 
-```
-Browser                Next.js API              Provider            DB
-  │                        │                       │                 │
-  │ POST /api/generate     │                       │                 │
-  │ { prompt, modelId }    │                       │                 │
-  ├───────────────────────►│                       │                 │
-  │                        │                       │                 │
-  │                        │ 1. auth() — who is this?                │
-  │                        │    no session → 401                     │
-  │                        │                       │                 │
-  │                        │ 2. validate prompt, resolve modelId     │
-  │                        │    unknown model → 400                  │
-  │                        │                       │                 │
-  │                        │ 3. call the model     │                 │
-  │                        ├──────────────────────►│                 │
-  │  (spinner)             │  ◄── raw text ────────┤                 │
-  │                        │                       │                 │
-  │                        │ 4. extract HTML from the reply          │
-  │                        │    strip fences, find <!DOCTYPE         │
-  │                        │    ─ doesn't look like HTML?            │
-  │                        │      ONE strict retry ────────►│        │
-  │                        │      still bad → 500 with a message     │
-  │                        │                       │                 │
-  │                        │ 5. INSERT project (title = prompt)      │
-  │                        │    INSERT version (n=1, html, model_id) │
-  │                        ├────────────────────────────────────────►│
-  │                        │                       │                 │
-  │  ◄─ { projectId, version } ───────────────────────────────────── │
-  │                        │                       │                 │
-  │ router.push(/p/:id)    │                       │                 │
-  │ render <iframe srcdoc={html} sandbox>          │                 │
+```mermaid
+sequenceDiagram
+  participant B as Browser
+  participant N as Next.js API
+  participant A as FastAPI
+  participant P as Provider
+  participant DB as Postgres
+
+  B->>N: POST /api/generate/stream { prompt, modelId }
+  N->>N: auth()
+  alt no session
+    N-->>B: 401
+  else signed in
+    N->>A: POST /generate/stream + X-User-Id + X-Internal-Key
+    A->>A: validate prompt and model
+    A->>P: streaming model call
+    P-->>A: reason/chat/code deltas
+    A-->>N: SSE reason/chat/code/retry events
+    N-->>B: SSE reason/chat/code/retry events
+    A->>A: split at ===APP=== and validate HTML
+    A->>DB: insert project if new
+    A->>DB: insert user + assistant messages
+    opt app was produced
+      A->>DB: insert version
+    end
+    A-->>N: SSE done { projectId, message, version|null }
+    N-->>B: SSE done { projectId, message, version|null }
+    B->>B: route to /p/:id and render iframe
+  end
 ```
 
-Step 4 is the load-bearing one. Models are told to emit raw HTML and nothing
-else, and they mostly comply — but "mostly" is not a demo you can run in front of
-an evaluator. The extractor strips markdown fences and any preamble, then
-validates. A single strict retry catches almost everything the first pass misses.
-Without this the app breaks maybe one build in ten, which is exactly often enough
-to happen during a review.
+Step 4 is the load-bearing one. The model is told to speak first, then emit
+`===APP===` only when it is actually building. Everything before the sentinel is
+chat; everything after it is the app source. If the app source does not validate
+as a complete HTML document, the backend does one strict retry before surfacing a
+readable error.
 
 ### C. Revise (the same endpoint)
 
 The only difference is that `projectId` is present in the request:
 
-```
-POST /api/generate { prompt: "add a dark mode toggle", projectId, modelId }
-  │
-  ├─ auth() → userId
-  ├─ SELECT project WHERE id = :projectId AND user_id = :userId
-  │    not found → 404          ← a project id in the URL is not authorisation
-  ├─ SELECT version WHERE project_id = :projectId ORDER BY n DESC LIMIT 1
-  │    → previous.html, n = previous.n + 1
-  ├─ call model with (previous HTML + "revise it: <prompt>")
-  ├─ INSERT version (n, html, model_id)      ← no UPDATE, ever
-  └─ → { version }
+```mermaid
+flowchart TD
+  Start["POST /api/generate/stream\n{ prompt, projectId, modelId }"]
+  Auth["Resolve session user"]
+  Own["SELECT project\nWHERE id = projectId\nAND user_id = userId"]
+  Missing["404 Not found"]
+  Latest["Load latest version\nORDER BY n DESC LIMIT 1"]
+  Context["Build model context\ntranscript + latest HTML"]
+  Model["Stream model response"]
+  SaveMessages["INSERT user + assistant messages"]
+  Built{"HTML produced?"}
+  SaveVersion["INSERT version\nn = latest.n + 1"]
+  Done["SSE done\n{ message, version|null }"]
+
+  Start --> Auth --> Own
+  Own -->|"missing or not owned"| Missing
+  Own -->|"owned"| Latest --> Context --> Model --> SaveMessages --> Built
+  Built -->|"yes"| SaveVersion --> Done
+  Built -->|"no"| Done
 ```
 
 One endpoint, two behaviours, switched by the presence of `projectId`. The
@@ -216,10 +282,10 @@ check, the extraction, the retry, and the insert. The ownership check and the
 
 ### D. Load a saved project
 
-`/p/:id` is a server component. It reads the session, fetches the project *and
-its versions* in one server-side pass, and hands them to the client component as
-props. The page arrives with the app already rendered — no loading flash, no
-client fetch waterfall.
+`/p/:id` is a server component. It reads the session, fetches the project, its
+versions, and its messages in one server-side pass, and hands them to the client
+component as props. The page arrives with the transcript and latest app already
+rendered — no loading flash, no client fetch waterfall.
 
 ---
 
@@ -234,57 +300,114 @@ Which models are actually usable right now. The picker is built from this, so a
 provider with no API key configured simply doesn't appear — it can't be selected,
 so it can't fail at generate time.
 
-```json
-{
-  "models": [
-    { "id": "deepseek/deepseek-chat", "label": "DeepSeek V3", "provider": "DeepSeek" },
-    { "id": "anthropic/claude-sonnet", "label": "Claude Sonnet", "provider": "Anthropic" }
-  ],
-  "default": "deepseek/deepseek-chat"
-}
-```
+| Field | Type | Meaning |
+|---|---|---|
+| `models` | `ModelOut[]` | Models whose provider key is configured |
+| `default` | `string \| null` | Preferred model id, or first available model |
 
-### `POST /api/generate`
+`ModelOut`
 
-```json
-// request
-{ "prompt": "a pomodoro timer with a task list", "modelId": "deepseek/deepseek-chat" }
-// ...or, to revise:
-{ "prompt": "add a dark mode toggle", "projectId": "uuid", "modelId": "…" }
+| Field | Type | Meaning |
+|---|---|---|
+| `id` | `string` | Stable model id stored on versions/messages |
+| `label` | `string` | Human-readable picker label |
+| `provider` | `string` | Human-readable provider label |
 
-// 200
-{
-  "projectId": "uuid",
-  "version": { "id": "uuid", "n": 1, "prompt": "…", "html": "<!DOCTYPE html>…", "modelId": "…" }
-}
-```
+### `POST /api/generate/stream`
+
+Request body:
+
+| Field | Type | Required | Meaning |
+|---|---|---:|---|
+| `prompt` | `string` | Yes | User message or requested change |
+| `projectId` | `string` | No | Present when revising or continuing an existing conversation |
+| `modelId` | `string` | No | Preferred model; falls back to configured default |
+
+Final `done` SSE payload:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `projectId` | `string` | Conversation/build thread id |
+| `message` | `MessageOut` | Assistant reply that was saved |
+| `version` | `VersionOut \| null` | Generated app version, or `null` for chat-only turns |
+
+Events before `done` are `reason`, `chat`, `code`, `retry`, and `error`.
+Chat-only turns return `"version": null`.
 
 | Status | When |
 |---|---|
 | 400 | empty prompt, or a `modelId` that isn't available |
 | 401 | no session |
 | 404 | `projectId` doesn't exist **or isn't yours** — same response either way, so the endpoint doesn't leak which |
-| 500 | the model failed twice, or the provider errored. Body carries a message the UI shows verbatim. |
+| 500 / `error` event | the provider failed, save failed, or the model failed validation after retry. Body carries a message the UI shows verbatim. |
 
 ### `GET /api/projects`
 
 The current user's projects, newest first. Never anyone else's.
 
-```json
-[{ "id": "uuid", "title": "a pomodoro timer with a task list", "createdAt": "…" }]
-```
+`ProjectOut`
+
+| Field | Type | Meaning |
+|---|---|---|
+| `id` | `string` | Project id |
+| `title` | `string` | Derived project title |
+| `createdAt` | `datetime` | Creation time |
 
 ### `GET /api/projects/:id`
 
-One project and all its versions, ascending. 404 if it isn't yours.
+One project, all versions, and all messages, ascending. 404 if it isn't yours.
 
-```json
-{ "project": { … }, "versions": [ { "n": 1, … }, { "n": 2, … } ] }
-```
+| Field | Type | Meaning |
+|---|---|---|
+| `project` | `ProjectOut` | Project metadata |
+| `versions` | `VersionOut[]` | Generated versions in ascending version order |
+| `messages` | `MessageOut[]` | Transcript in creation order |
+
+`VersionOut`
+
+| Field | Type | Meaning |
+|---|---|---|
+| `id` | `string` | Version id |
+| `n` | `integer` | Version number within the project |
+| `prompt` | `string` | Prompt that produced this version |
+| `html` | `string` | Complete generated HTML document |
+| `modelId` | `string` | Model that produced this version |
+| `createdAt` | `datetime` | Creation time |
+
+`MessageOut`
+
+| Field | Type | Meaning |
+|---|---|---|
+| `id` | `string` | Message id |
+| `role` | `"user" \| "assistant"` | Speaker |
+| `content` | `string` | Visible message text |
+| `reasoning` | `string \| null` | Optional provider reasoning text |
+| `modelId` | `string \| null` | Assistant turn model id |
+| `versionId` | `string \| null` | Version produced by this turn, if any |
+| `createdAt` | `datetime` | Creation time |
 
 ---
 
 ## 5. Trust boundaries
+
+```mermaid
+flowchart TD
+  Browser["Browser"]
+  Workbench["Workbench UI\ntrusted app shell"]
+  Frame["Generated app iframe\nopaque sandbox origin"]
+  Next["Next.js BFF\nsession owner"]
+  API["FastAPI\nprovider keys + DB access"]
+  Provider["AI provider"]
+  DB[("Postgres")]
+
+  Browser --> Workbench
+  Workbench -->|"srcdoc + sandbox\nno allow-same-origin"| Frame
+  Workbench -->|"same-origin /api/*"| Next
+  Next -->|"internal headers only"| API
+  API -->|"server-side provider key"| Provider
+  API --> DB
+  Frame -. "cannot read parent cookies/session" .-> Workbench
+```
 
 **The generated HTML is untrusted input.** A model wrote it, and a user's prompt
 steered the model. It runs in an iframe with an explicit `sandbox` attribute
@@ -311,8 +434,9 @@ from the environment.
 
 | Failure | Behaviour |
 |---|---|
-| Model returns prose instead of HTML | Extractor strips it; if still invalid, one strict retry; then a readable error suggesting another model |
-| Model times out | 500 with the provider's message; the version is never written, so no half-built rows |
+| User greets or asks a question | Chat-only turn is saved; no version is written |
+| Model starts a build but returns malformed HTML | Extractor strips it; if still invalid, one strict retry; then a readable error suggesting another model |
+| Model times out | SSE `error` event with the provider's message; the version is never written, so no half-built rows |
 | Provider key missing | The model never appears in the picker |
 | Two builds fired at once | The button is disabled while `working`; the server would tolerate it (append-only, `MAX(n)+1`) but the UI prevents it |
 | Generated app throws at runtime | It breaks inside the iframe only. The workbench is unaffected. The user reads the error, revises, gets v2. |

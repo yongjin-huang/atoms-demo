@@ -1,9 +1,10 @@
 # atoms-demo
 
-Describe an app in plain language. An agent writes it as a single self-contained
-HTML document. It runs immediately in a sandboxed frame. Revise it in place, and
-every revision is kept as a numbered version you can jump back to — tagged with
-which model built it.
+Describe an app, ask a question, or revise an existing build. The agent replies
+conversationally, streams code when a build is warranted, and runs the generated
+single-file HTML app immediately in a sandboxed frame. Every conversation and
+generated version is persisted, and build versions stay tagged with the model
+that produced them.
 
 ## Run it
 
@@ -23,19 +24,24 @@ Google OAuth redirect URI, local:
 
 ## Shape
 
-```
-Browser ──cookie──► Next.js (BFF)  ──X-User-Id + X-Internal-Key──►  FastAPI  ──►  Postgres
-                    · Google sign-in                                 · providers
-                    · serves the UI                                  · generation
-                    · proxies /api/*                                 · owns every table
+```mermaid
+flowchart LR
+  Browser["Browser\ncookie only"]
+  Next["Next.js BFF\nGoogle sign-in\nserves UI\nproxies /api/*"]
+  FastAPI["FastAPI\nproviders\ngeneration\npersistence"]
+  Postgres[("Postgres\nusers/projects/versions/messages")]
+
+  Browser -->|"httpOnly session cookie"| Next
+  Next -->|"X-User-Id + X-Internal-Key"| FastAPI
+  FastAPI --> Postgres
 ```
 
 **Next owns the session and nothing else.** Auth.js runs with JWT sessions and
 no database adapter — it does the Google dance, puts the `sub` claim in a signed
 httpOnly cookie, and forwards it. It has no database connection at all.
 
-**Python owns the product.** The provider registry, generation, HTML extraction,
-the retry, and all three tables including `users`.
+**Python owns the product.** The provider registry, streaming generation, HTML
+extraction, the strict retry, and all product tables including `users`.
 
 **The browser never talks to FastAPI.** Every call goes through Next's `/api/*`
 proxy, server-to-server. Same origin, so there is no CORS, no token in the
@@ -57,22 +63,55 @@ deliberate trade. See `docs/ARCHITECTURE.md`.
 
 ## Layout
 
-```
-app/          Next: pages + the /api/* proxy
-components/   the workbench UI
-lib/api.ts    the seam — the only path to the Python service
-auth.ts       Google sign-in, JWT sessions, no database
-api/          FastAPI: providers, generation, persistence
-  agent.py      call the model, extract HTML, one strict retry
-  providers.py  the registry — one line per model
-  models.py     SQLAlchemy: users, projects, versions
-docs/         architecture and the backend decision
-```
+| Path | Role |
+|---|---|
+| `app/` | Next pages and `/api/*` proxy routes |
+| `components/` | Workbench and sign-in UI |
+| `lib/api.ts` | Server-only path from Next to FastAPI |
+| `auth.ts` | Google sign-in with Auth.js JWT sessions |
+| `api/agent.py` | Streams the model, splits chat/code, extracts HTML, retries once |
+| `api/providers.py` | Provider/model registry |
+| `api/models.py` | SQLAlchemy schema: users, projects, versions, messages |
+| `docs/` | Architecture and backend decision notes |
+
+## Current status
+
+- Google sign-in through Auth.js JWT sessions.
+- FastAPI service with `/models`, `/projects`, `/projects/:id`, and streaming
+  `/generate/stream`.
+- Persisted projects, message transcripts, generated versions, model ids, and
+  optional reasoning text.
+- Live SSE updates for reasoning, chat, source code, retry state, and completion.
+- Sandboxed iframe preview with a guarded partial renderer for in-progress HTML.
 
 ## Known gaps
 
 - **Schema is created with `create_all()` on startup.** Fine for a demo; a real
-  deployment gets Alembic. Called out rather than hidden.
-- No streaming. Generation is a blocking 10–30s request.
+  deployment gets Alembic. `create_all()` creates missing tables but does not
+  alter existing ones, so schema changes need migrations before real data.
 - No multi-file generation, no npm packages in generated apps.
 - No sharing — every project is private to its owner.
+- No automated generated-app repair loop yet. A malformed HTML response gets one
+  strict retry, but runtime errors are left for the user to revise.
+
+## Requirement review
+
+The written test asks for a runnable Atoms-style demo with real interactivity,
+persistence, a primary user journey, and a public live test link. This repo
+covers the local runnable app, Google sign-in, AI-assisted generation, live
+preview, revision history, and persistence. Before submission, the remaining
+must-do item is deployment: provide the public app URL and public GitHub URL in
+the submission document.
+
+Risks to call out honestly:
+
+- Generated apps are constrained to one self-contained HTML file. That keeps the
+  demo safe and deployable quickly, but excludes npm packages, server code, and
+  multi-page projects.
+- Production deployment needs two services: Next.js plus FastAPI/Postgres.
+  Environment variables must match across services, especially
+  `INTERNAL_API_KEY`, provider keys, Google OAuth callback URLs, and `API_URL`.
+- Schema migrations are not implemented. Demo databases can start fresh; a real
+  deployment should add Alembic before evolving the schema.
+- The app validates generated HTML, but it does not execute tests inside the
+  generated app or automatically repair runtime errors.

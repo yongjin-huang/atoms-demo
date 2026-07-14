@@ -33,29 +33,16 @@ The trick is to stop thinking of Next as "the frontend" and start thinking of it
 as the **BFF** (backend-for-frontend): it owns the browser session and nothing
 else. Python owns the product.
 
-```
-                    ┌──────────────────────────────────────┐
-  Browser ─────────►│  Next.js  (Vercel)                   │
-   (cookie only)    │                                      │
-                    │  • Google sign-in (Auth.js, JWT)     │
-                    │  • serves the UI                     │
-                    │  • /api/* → thin proxy               │
-                    └───────────────┬──────────────────────┘
-                                    │  server-to-server
-                                    │  X-User-Id: <google sub>
-                                    │  X-Internal-Key: <shared secret>
-                                    ▼
-                    ┌──────────────────────────────────────┐
-                    │  FastAPI  (Railway / Render / Fly)   │
-                    │                                      │
-                    │  • provider registry + generation    │
-                    │  • HTML extraction + retry           │
-                    │  • owns ALL product tables           │
-                    └───────────────┬──────────────────────┘
-                                    ▼
-                            ┌───────────────┐
-                            │   Postgres    │
-                            └───────────────┘
+```mermaid
+flowchart TD
+  Browser["Browser\ncookie only"]
+  Next["Next.js BFF\nVercel\nAuth.js JWT\nserves UI\n/api/* proxy"]
+  API["FastAPI\nRailway / Render / Fly\nprovider registry\ngeneration\nHTML extraction + retry"]
+  DB[("Postgres\nall product tables")]
+
+  Browser -->|"httpOnly session cookie"| Next
+  Next -->|"server-to-server\nX-User-Id: Google sub\nX-Internal-Key: shared secret"| API
+  API --> DB
 ```
 
 ### The three things that make it cheap
@@ -149,51 +136,37 @@ finished monolith on every criterion they listed.
 
 ---
 
-## Recommendation
+## Current implementation
 
-**Build Option B, but sequence it so the split is reversible.**
+Option B is the implementation now. Next.js is the BFF, Auth.js uses JWT
+sessions without a database adapter, and FastAPI owns generation plus the
+`users`, `projects`, `versions`, and `messages` tables.
 
-The insight is that the API contract is the seam. So:
-
-1. **Ship the vertical slice on Next first** (the scaffold already does this).
-   Prompt → generate → iframe → persist → revise, working end to end.
-2. **Then port the two endpoints to FastAPI** (`/generate`, `/projects`) behind
-   the same contract, and turn Next's routes into proxies.
-
-If you run out of time at step 2, you ship a complete, working Next app and say
-in the write-up that the Python port was scoped out. That's a defensible,
-finished submission.
-
-If you build the split first and run out of time, you ship a half-wired app that
-doesn't run. That's the failure mode the sequencing above exists to prevent.
-
-**The rule: never let the architecture decision be the thing that's unfinished.**
+The seam also moved from a blocking `/generate` JSON route to streaming
+`/generate/stream` SSE. The browser still talks only to Next; Next forwards the
+request body and streams FastAPI's events back unchanged after verifying the
+session.
 
 ---
 
-## If you commit to Python, the concrete shape
+## Concrete shape
 
-```
-api/
-  main.py           FastAPI app, CORS off, routes mounted
-  deps.py           current_user() — the 15 lines above
-  models.py         SQLAlchemy: users, projects, versions
-  schemas.py        Pydantic request/response — mirrors §4 exactly
-  providers.py      the registry (DeepSeek / OpenAI / OpenRouter / Anthropic)
-  agent.py          generate_app(): call, extract HTML, one strict retry
-  routes/
-    generate.py
-    projects.py
-    models.py
-  alembic/          migrations
-  pyproject.toml
-```
+| Path | Role |
+|---|---|
+| `api/main.py` | FastAPI app, CORS off, routes mounted |
+| `api/deps.py` | `current_user()` service-boundary auth |
+| `api/models.py` | SQLAlchemy schema for `users`, `projects`, `versions`, `messages` |
+| `api/schemas.py` | Pydantic request/response models |
+| `api/providers.py` | Registry for DeepSeek, OpenAI, OpenRouter, Anthropic |
+| `api/agent.py` | `converse()` streams reason/chat/code, extracts HTML, retries once |
+| `api/routes/stream.py` | `/generate/stream` SSE endpoint |
+| `api/routes/projects.py` | Project list/detail endpoints |
+| `api/routes/models.py` | Available models endpoint |
+| `api/requirements.txt` | Python dependency list |
 
-`providers.py` ports almost verbatim — the `openai` Python SDK takes a
-`base_url` exactly like the TS one, so DeepSeek/OpenAI/OpenRouter still share a
-single client, and Anthropic still gets the second adapter. The registry pattern
-survives the language change unchanged, which is a decent sign it was the right
-abstraction.
+`providers.py` keeps one registry and two adapters. DeepSeek, OpenAI, and
+OpenRouter share the OpenAI-compatible client; Anthropic uses its own SDK.
 
-The frontend does not change at all. That is the point of writing the contract
-down first.
+The largest remaining backend shortcut is schema management: startup calls
+`create_all()`, which is acceptable for this demo but not enough for production
+changes to existing tables. Alembic is the obvious next step.
