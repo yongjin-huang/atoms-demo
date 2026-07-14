@@ -1,0 +1,56 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: atoms
+      POSTGRES_PASSWORD: atoms
+      POSTGRES_DB: atoms
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U atoms"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build: ./api
+    environment:
+      DATABASE_URL: postgresql+psycopg://atoms:atoms@db:5432/atoms
+    env_file:
+      - .env.local
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./api:/srv
+    depends_on:
+      db:
+        condition: service_healthy
+
+  web:
+    build: .
+    # Was: sh -c "npm install && npm run dev"
+    # The image already installed the dependencies. Re-running install on every
+    # `up` was doing the same work twice, every time.
+    command: npm run dev
+    environment:
+      API_URL: http://api:8000
+    env_file:
+      - .env.local
+    ports:
+      - "3000:3000"
+    volumes:
+      - .:/app
+      # Named, so `docker volume rm atoms-demo_web_node_modules` resets the
+      # dependencies without touching pgdata.
+      - web_node_modules:/app/node_modules
+      - web_next:/app/.next
+    depends_on:
+      - api
+
+volumes:
+  pgdata:
+  web_node_modules:
+  web_next:
