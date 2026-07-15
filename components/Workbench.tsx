@@ -32,7 +32,12 @@ type Settings = {
   defaultModelId: string | null;
   configured: boolean;
   models: Model[];
-  keys: { deepseek: boolean; openai: boolean; anthropic: boolean; openrouter: boolean };
+  keys: {
+    deepseek: boolean;
+    openai: boolean;
+    anthropic: boolean;
+    openrouter: boolean;
+  };
 };
 
 export default function Workbench({
@@ -74,8 +79,8 @@ export default function Workbench({
   const [pending, setPending] = useState<string | null>(null);
   const [liveReason, setLiveReason] = useState("");
   const [liveChat, setLiveChat] = useState("");
-  const [liveCode, setLiveCode] = useState("");     // content of the file being written
-  const [liveFile, setLiveFile] = useState("");     // its path
+  const [liveCode, setLiveCode] = useState(""); // content of the file being written
+  const [liveFile, setLiveFile] = useState(""); // its path
   const [liveDone, setLiveDone] = useState<string[]>([]); // paths already completed
   const [reformatting, setReformatting] = useState(false);
   const [preview, setPreview] = useState<string | null>(null);
@@ -98,9 +103,21 @@ export default function Workbench({
   function flushStream() {
     flushHandle.current = null;
     const b = streamBuf.current;
-    if (b.reason) { const t = b.reason; b.reason = ""; setLiveReason((s) => s + t); }
-    if (b.chat)   { const t = b.chat;   b.chat = "";   setLiveChat((s) => s + t); }
-    if (b.code)   { const t = b.code;   b.code = "";   setLiveCode((s) => s + t); }
+    if (b.reason) {
+      const t = b.reason;
+      b.reason = "";
+      setLiveReason((s) => s + t);
+    }
+    if (b.chat) {
+      const t = b.chat;
+      b.chat = "";
+      setLiveChat((s) => s + t);
+    }
+    if (b.code) {
+      const t = b.code;
+      b.code = "";
+      setLiveCode((s) => s + t);
+    }
   }
 
   function queueStream(kind: "reason" | "chat" | "code", text: string) {
@@ -116,7 +133,7 @@ export default function Workbench({
     streamBuf.current = { reason: "", chat: "", code: "" };
   }
 
-  const pendingRef = useRef("");   // the prompt of the in-flight turn
+  const pendingRef = useRef(""); // the prompt of the in-flight turn
   const sawCodeRef = useRef(false);
 
   function beginTurn(text: string) {
@@ -179,7 +196,11 @@ export default function Workbench({
       }
       setMessages((ms) => [
         ...ms,
-        { id: `${data.message.id}-u`, role: "user", content: pendingRef.current },
+        {
+          id: `${data.message.id}-u`,
+          role: "user",
+          content: pendingRef.current,
+        },
         data.message,
       ]);
       if (data.version) {
@@ -199,15 +220,17 @@ export default function Workbench({
   useEffect(() => {
     fetch("/api/generations/active")
       .then((r) => (r.ok ? r.json() : []))
-      .then((list: { id: string; projectId: string | null; prompt: string }[]) => {
-        const mine = list.find((g) => g.projectId === (projectId ?? null));
-        if (!mine) return;
-        beginTurn(mine.prompt);
-        gen.resume(mine.id).catch(() => {
-          setError("Lost track of the running build — reload to check.");
-          setPending(null);
-        });
-      })
+      .then(
+        (list: { id: string; projectId: string | null; prompt: string }[]) => {
+          const mine = list.find((g) => g.projectId === (projectId ?? null));
+          if (!mine) return;
+          beginTurn(mine.prompt);
+          gen.resume(mine.id).catch(() => {
+            setError("Lost track of the running build — reload to check.");
+            setPending(null);
+          });
+        },
+      )
       .catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -275,20 +298,27 @@ export default function Workbench({
   useEffect(() => {
     if (!active) return;
     if (!active.files.some((f) => f.path === srcPath)) {
-      setSrcPath(active.files.find((f) => f.path === "index.html")?.path ?? active.files[0]?.path ?? "");
+      setSrcPath(
+        active.files.find((f) => f.path === "index.html")?.path ??
+          active.files[0]?.path ??
+          "",
+      );
     }
   }, [activeN, versions]); // eslint-disable-line react-hooks/exhaustive-deps
-  const srcContent = active?.files.find((f) => f.path === srcPath)?.content ?? "";
+  const srcContent =
+    active?.files.find((f) => f.path === srcPath)?.content ?? "";
 
   // While streaming, render only the tail of the document. React re-commits
   // the whole text node on every flush; keeping it small keeps frames cheap.
   // The full source appears the moment the version lands.
   const CODE_TAIL = 6000;
-  const codeTail = liveCode.length > CODE_TAIL ? liveCode.slice(-CODE_TAIL) : liveCode;
+  const codeTail =
+    liveCode.length > CODE_TAIL ? liveCode.slice(-CODE_TAIL) : liveCode;
   const codeHidden = Math.max(0, liveCode.length - CODE_TAIL);
   const labelFor = (id?: string | null) =>
     (id && models.find((m) => m.id === id)?.label) || id || "";
-  const versionFor = (vid?: string | null) => versions.find((v) => v.id === vid);
+  const versionFor = (vid?: string | null) =>
+    versions.find((v) => v.id === vid);
   const allModelOptions = settings?.models.length ? settings.models : models;
 
   async function saveSettings() {
@@ -318,7 +348,9 @@ export default function Workbench({
       await refreshModels();
       setSettingsOpen(false);
     } catch (e) {
-      setSettingsError(e instanceof Error ? e.message : "Could not save settings.");
+      setSettingsError(
+        e instanceof Error ? e.message : "Could not save settings.",
+      );
     } finally {
       setSettingsSaving(false);
     }
@@ -331,7 +363,7 @@ export default function Workbench({
     try {
       // Resolves when the generation reaches a terminal event. All UI
       // updates happen in handleEvent; this only reports transport failures.
-      await gen.start({ prompt: text, projectId, modelId });
+      await gen.start({ prompt: text, projectId: projectId ?? null, modelId });
     } catch (e) {
       setError(e instanceof Error ? e.message : "Something broke.");
       setPrompt(text);
@@ -352,352 +384,458 @@ export default function Workbench({
 
   return (
     <>
-    <div className="shell">
-      <aside className="rail">
-        <div className="brand">atoms<span>.</span>demo</div>
-        <div className="brand-sub">talk → build → run</div>
-
-        <div className="rail-label">Your builds</div>
-        {history.length === 0 ? (
-          <p className="rail-empty">Nothing yet. Your conversations will collect here.</p>
-        ) : (
-          history.map((p) => (
-            <a key={p.id} href={`/p/${p.id}`} className={`rail-item ${p.id === projectId ? "on" : ""}`}>
-              {p.title}
-            </a>
-          ))
-        )}
-        <a href="/" className="rail-item rail-new">+ New conversation</a>
-
-        <div className="who">
-          {user.image && <img src={user.image} alt="" />}
-          <span className="who-name">{user.name ?? "Signed in"}</span>
-          <button type="button" className="who-out" onClick={() => setSettingsOpen(true)}>
-            Settings
-          </button>
-          <form action={signOutAction}>
-            <button type="submit" className="who-out">Sign out</button>
-          </form>
-        </div>
-      </aside>
-
-      <div className="work">
-        {/* ---------------- conversation ---------------- */}
-        <section className="convo">
-          <div className="convo-head">
-            <h1 className="h1">{projectId ? "Conversation" : "New conversation"}</h1>
-            <span className={`status ${active && !working ? "live" : ""}`}>
-              {working ? "thinking…" : active ? `v${active.n} · running` : "idle"}
-            </span>
+      <div className="shell">
+        <aside className="rail">
+          <div className="brand">
+            atoms<span>.</span>demo
           </div>
+          <div className="brand-sub">talk → build → run</div>
 
-          <div
-            className="turns"
-            ref={turnsRef}
-            onScroll={(e) => { stickTurns.current = nearBottom(e.currentTarget); }}
-          >
-            {empty ? (
-              <p className="turns-empty">
-                Say hello, or describe an app.
-                <br />
-                It builds when you ask it to — not before.
-              </p>
-            ) : (
-              <>
-                {messages.map((m) => {
-                  if (m.role === "user") {
-                    return <div className="said" key={m.id}>{m.content}</div>;
-                  }
-                  const v = versionFor(m.versionId);
-                  const open = !!openThoughts[m.id];
-                  return (
-                    <div className="reply" key={m.id}>
-                      {m.reasoning && (
-                        <div className="thought">
-                          <button
-                            className="thought-head"
-                            onClick={() => setOpenThoughts((s) => ({ ...s, [m.id]: !open }))}
-                          >
-                            <span className="chev">{open ? "▾" : "▸"}</span> Thought for a moment
-                          </button>
-                          {open && <pre className="thought-body">{m.reasoning}</pre>}
-                        </div>
-                      )}
-                      <div className="said-back">{m.content}</div>
-                      {v && (
-                        <button
-                          className={`built ${v.n === activeN ? "on" : ""}`}
-                          onClick={() => {
-                            setActiveN(v.n);
-                            setTab("preview");
-                          }}
-                        >
-                          <span className="built-v">Built v{v.n}</span>
-                          <span className="built-meta">{labelFor(m.modelId)}</span>
-                        </button>
-                      )}
-                    </div>
-                  );
-                })}
-
-                {pending && (
-                  <>
-                    <div className="said">{pending}</div>
-                    <div className="reply">
-                      {liveReason && (
-                        <div className="thought open">
-                          <div className="thought-head static">
-                            <span className="pulse" /> Thinking
-                          </div>
-                          <pre className="thought-body live">{liveReason}</pre>
-                        </div>
-                      )}
-                      {liveChat ? (
-                        <div className="said-back">
-                          {liveChat}
-                          <span className="caret-inline" />
-                        </div>
-                      ) : (
-                        !liveReason && (
-                          <div className="said-back muted">
-                            <span className="pulse" /> …
-                          </div>
-                        )
-                      )}
-                      {(liveCode || liveFile) && (
-                        <div className="built pending">
-                          <span className="built-v">
-                            <span className="pulse" />
-                            {reformatting ? "Reformatting…" : `Writing ${liveFile || "the app"}…`}
-                          </span>
-                          <span className="built-meta">
-                            {liveDone.length > 0 && `${liveDone.length} file${liveDone.length > 1 ? "s" : ""} done · `}
-                            {liveCode.length.toLocaleString()} chars
-                          </span>
-                        </div>
-                      )}
-                    </div>
-                  </>
-                )}
-              </>
-            )}
-          </div>
-
-          {error && <div className="error">{error}</div>}
-
-          <div className="prompt">
-            <textarea
-              value={prompt}
-              onChange={(e) => setPrompt(e.target.value)}
-              onKeyDown={onKey}
-              placeholder={
-                empty
-                  ? "Say hi, or: a pomodoro timer with a task list…"
-                  : "Add a dark mode toggle. Or just ask a question…"
-              }
-            />
-            <div className="prompt-bar">
-              <select
-                className="picker"
-                value={modelId}
-                onChange={(e) => setModelId(e.target.value)}
-                disabled={models.length === 0 || working}
-                aria-label="Model"
-              >
-                {models.length === 0 ? (
-                  <option>No provider configured</option>
-                ) : (
-                  models.map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {m.provider} · {m.label}
-                    </option>
-                  ))
-                )}
-              </select>
-              <span className="hint">⌘↵</span>
-              {working ? (
-                <button type="button" className="stop" onClick={stop}>
-                  Stop
-                </button>
-              ) : (
-                <button className="build" onClick={send} disabled={!prompt.trim() || !modelId}>
-                  Send
-                </button>
-              )}
-            </div>
-          </div>
-        </section>
-
-        {/* ---------------- stage ---------------- */}
-        <section className="stage">
-          <div className="stage-head">
-            <span className="stage-title">
-              {working && liveCode
-                ? preview
-                  ? "live preview · still writing"
-                  : "waiting for the stylesheet…"
-                : active
-                  ? `v${active.n} · ${labelFor(active.modelId)}`
-                  : "nothing running"}
-            </span>
-            <div className="tabs">
-              <button className={`tab ${tab === "preview" ? "on" : ""}`} onClick={() => setTab("preview")}>
-                Preview
-              </button>
-              <button className={`tab ${tab === "source" ? "on" : ""}`} onClick={() => setTab("source")}>
-                Source
-              </button>
-            </div>
-          </div>
-
-          {tab === "source" ? (
-            <>
-              {!working && active && active.files.length > 1 && (
-                <select
-                  className="picker src-picker"
-                  value={srcPath}
-                  onChange={(e) => setSrcPath(e.target.value)}
-                  aria-label="File"
-                >
-                  {active.files.map((f) => (
-                    <option key={f.path} value={f.path}>{f.path}</option>
-                  ))}
-                </select>
-              )}
-              <pre
-                className={`source ${working ? "streaming" : ""}`}
-                ref={codeRef}
-                onScroll={(e) => { stickCode.current = nearBottom(e.currentTarget); }}
-              >
-                {working ? (
-                  <>
-                    {(liveFile || codeHidden > 0) && (
-                      <span className="src-gap">
-                        {liveFile && `${liveFile} · `}
-                        {codeHidden > 0
-                          ? `… ${codeHidden.toLocaleString()} chars above · streaming tail`
-                          : "streaming"}
-                      </span>
-                    )}
-                    {codeTail}
-                  </>
-                ) : (
-                  srcContent
-                )}
-                {working && <span className="caret" />}
-              </pre>
-            </>
+          <div className="rail-label">Your builds</div>
+          {history.length === 0 ? (
+            <p className="rail-empty">
+              Nothing yet. Your conversations will collect here.
+            </p>
           ) : (
-            <div className="bed">
-              <span className="crop-bl" />
-              <span className="crop-br" />
-              {working && liveCode ? (
-                preview ? (
-                  <iframe
-                    className="frame"
-                    srcDoc={preview}
-                    sandbox="allow-scripts allow-forms allow-modals"
-                    title="Live preview"
-                  />
-                ) : (
-                  <div className="bed-empty">
-                    <h2>Laying out the stylesheet</h2>
-                    <p>
-                      Holding the preview until the styles are complete — rendering
-                      half a stylesheet just shows you a broken page.
-                    </p>
-                  </div>
-                )
-              ) : active ? (
-                active.runtime === "srcdoc" ? (
-                  <iframe
-                    key={active.id}
-                    className="frame"
-                    srcDoc={htmlOf(active)}
-                    sandbox="allow-scripts allow-forms allow-modals"
-                    title={`Version ${active.n}`}
-                  />
-                ) : (
-                  <div className="bed-empty">
-                    <h2>Sandbox runtime</h2>
-                    <p>
-                      This version's template ({active.manifest.template}) runs in a
-                      server sandbox — arriving in the next phase.
-                    </p>
-                  </div>
-                )
+            history.map((p) => (
+              <a
+                key={p.id}
+                href={`/p/${p.id}`}
+                className={`rail-item ${p.id === projectId ? "on" : ""}`}
+              >
+                {p.title}
+              </a>
+            ))
+          )}
+          <a href="/" className="rail-item rail-new">
+            + New conversation
+          </a>
+
+          <div className="who">
+            {user.image && <img src={user.image} alt="" />}
+            <span className="who-name">{user.name ?? "Signed in"}</span>
+            <button
+              type="button"
+              className="who-out"
+              onClick={() => setSettingsOpen(true)}
+            >
+              Settings
+            </button>
+            <form action={signOutAction}>
+              <button type="submit" className="who-out">
+                Sign out
+              </button>
+            </form>
+          </div>
+        </aside>
+
+        <div className="work">
+          {/* ---------------- conversation ---------------- */}
+          <section className="convo">
+            <div className="convo-head">
+              <h1 className="h1">
+                {projectId ? "Conversation" : "New conversation"}
+              </h1>
+              <span className={`status ${active && !working ? "live" : ""}`}>
+                {working
+                  ? "thinking…"
+                  : active
+                    ? `v${active.n} · running`
+                    : "idle"}
+              </span>
+            </div>
+
+            <div
+              className="turns"
+              ref={turnsRef}
+              onScroll={(e) => {
+                stickTurns.current = nearBottom(e.currentTarget);
+              }}
+            >
+              {empty ? (
+                <p className="turns-empty">
+                  Say hello, or describe an app.
+                  <br />
+                  It builds when you ask it to — not before.
+                </p>
               ) : (
-                <div className="bed-empty">
-                  <h2>Nothing running</h2>
-                  <p>Ask for an app and it starts here. Ask a question and it just answers.</p>
-                </div>
+                <>
+                  {messages.map((m) => {
+                    if (m.role === "user") {
+                      return (
+                        <div className="said" key={m.id}>
+                          {m.content}
+                        </div>
+                      );
+                    }
+                    const v = versionFor(m.versionId);
+                    const open = !!openThoughts[m.id];
+                    return (
+                      <div className="reply" key={m.id}>
+                        {m.reasoning && (
+                          <div className="thought">
+                            <button
+                              className="thought-head"
+                              onClick={() =>
+                                setOpenThoughts((s) => ({
+                                  ...s,
+                                  [m.id]: !open,
+                                }))
+                              }
+                            >
+                              <span className="chev">{open ? "▾" : "▸"}</span>{" "}
+                              Thought for a moment
+                            </button>
+                            {open && (
+                              <pre className="thought-body">{m.reasoning}</pre>
+                            )}
+                          </div>
+                        )}
+                        <div className="said-back">{m.content}</div>
+                        {v && (
+                          <button
+                            className={`built ${v.n === activeN ? "on" : ""}`}
+                            onClick={() => {
+                              setActiveN(v.n);
+                              setTab("preview");
+                            }}
+                          >
+                            <span className="built-v">Built v{v.n}</span>
+                            <span className="built-meta">
+                              {labelFor(m.modelId)}
+                            </span>
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })}
+
+                  {pending && (
+                    <>
+                      <div className="said">{pending}</div>
+                      <div className="reply">
+                        {liveReason && (
+                          <div className="thought open">
+                            <div className="thought-head static">
+                              <span className="pulse" /> Thinking
+                            </div>
+                            <pre className="thought-body live">
+                              {liveReason}
+                            </pre>
+                          </div>
+                        )}
+                        {liveChat ? (
+                          <div className="said-back">
+                            {liveChat}
+                            <span className="caret-inline" />
+                          </div>
+                        ) : (
+                          !liveReason && (
+                            <div className="said-back muted">
+                              <span className="pulse" /> …
+                            </div>
+                          )
+                        )}
+                        {(liveCode || liveFile) && (
+                          <div className="built pending">
+                            <span className="built-v">
+                              <span className="pulse" />
+                              {reformatting
+                                ? "Reformatting…"
+                                : `Writing ${liveFile || "the app"}…`}
+                            </span>
+                            <span className="built-meta">
+                              {liveDone.length > 0 &&
+                                `${liveDone.length} file${liveDone.length > 1 ? "s" : ""} done · `}
+                              {liveCode.length.toLocaleString()} chars
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                    </>
+                  )}
+                </>
               )}
             </div>
-          )}
-        </section>
-      </div>
-    </div>
-    {settingsOpen && (
-      <div className="modal-backdrop" role="presentation">
-        <section className="settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title">
-          <div className="settings-head">
-            <div>
-              <h2 id="settings-title">User settings</h2>
-              <p>Choose a default model and add the provider key this demo should use.</p>
+
+            {error && <div className="error">{error}</div>}
+
+            <div className="prompt">
+              <textarea
+                value={prompt}
+                onChange={(e) => setPrompt(e.target.value)}
+                onKeyDown={onKey}
+                placeholder={
+                  empty
+                    ? "Say hi, or: a pomodoro timer with a task list…"
+                    : "Add a dark mode toggle. Or just ask a question…"
+                }
+              />
+              <div className="prompt-bar">
+                <select
+                  className="picker"
+                  value={modelId}
+                  onChange={(e) => setModelId(e.target.value)}
+                  disabled={models.length === 0 || working}
+                  aria-label="Model"
+                >
+                  {models.length === 0 ? (
+                    <option>No provider configured</option>
+                  ) : (
+                    models.map((m) => (
+                      <option key={m.id} value={m.id}>
+                        {m.provider} · {m.label}
+                      </option>
+                    ))
+                  )}
+                </select>
+                <span className="hint">⌘↵</span>
+                {working ? (
+                  <button type="button" className="stop" onClick={stop}>
+                    Stop
+                  </button>
+                ) : (
+                  <button
+                    className="build"
+                    onClick={send}
+                    disabled={!prompt.trim() || !modelId}
+                  >
+                    Send
+                  </button>
+                )}
+              </div>
             </div>
-            {settings?.configured && (
-              <button className="modal-close" onClick={() => setSettingsOpen(false)} aria-label="Close settings">
-                X
-              </button>
+          </section>
+
+          {/* ---------------- stage ---------------- */}
+          <section className="stage">
+            <div className="stage-head">
+              <span className="stage-title">
+                {working && liveCode
+                  ? preview
+                    ? "live preview · still writing"
+                    : "waiting for the stylesheet…"
+                  : active
+                    ? `v${active.n} · ${labelFor(active.modelId)}`
+                    : "nothing running"}
+              </span>
+              <div className="tabs">
+                <button
+                  className={`tab ${tab === "preview" ? "on" : ""}`}
+                  onClick={() => setTab("preview")}
+                >
+                  Preview
+                </button>
+                <button
+                  className={`tab ${tab === "source" ? "on" : ""}`}
+                  onClick={() => setTab("source")}
+                >
+                  Source
+                </button>
+              </div>
+            </div>
+
+            {tab === "source" ? (
+              <>
+                {!working && active && active.files.length > 1 && (
+                  <select
+                    className="picker src-picker"
+                    value={srcPath}
+                    onChange={(e) => setSrcPath(e.target.value)}
+                    aria-label="File"
+                  >
+                    {active.files.map((f) => (
+                      <option key={f.path} value={f.path}>
+                        {f.path}
+                      </option>
+                    ))}
+                  </select>
+                )}
+                <pre
+                  className={`source ${working ? "streaming" : ""}`}
+                  ref={codeRef}
+                  onScroll={(e) => {
+                    stickCode.current = nearBottom(e.currentTarget);
+                  }}
+                >
+                  {working ? (
+                    <>
+                      {(liveFile || codeHidden > 0) && (
+                        <span className="src-gap">
+                          {liveFile && `${liveFile} · `}
+                          {codeHidden > 0
+                            ? `… ${codeHidden.toLocaleString()} chars above · streaming tail`
+                            : "streaming"}
+                        </span>
+                      )}
+                      {codeTail}
+                    </>
+                  ) : (
+                    srcContent
+                  )}
+                  {working && <span className="caret" />}
+                </pre>
+              </>
+            ) : (
+              <div className="bed">
+                <span className="crop-bl" />
+                <span className="crop-br" />
+                {working && liveCode ? (
+                  preview ? (
+                    <iframe
+                      className="frame"
+                      srcDoc={preview}
+                      sandbox="allow-scripts allow-forms allow-modals"
+                      title="Live preview"
+                    />
+                  ) : (
+                    <div className="bed-empty">
+                      <h2>Laying out the stylesheet</h2>
+                      <p>
+                        Holding the preview until the styles are complete —
+                        rendering half a stylesheet just shows you a broken
+                        page.
+                      </p>
+                    </div>
+                  )
+                ) : active ? (
+                  active.runtime === "srcdoc" ? (
+                    <iframe
+                      key={active.id}
+                      className="frame"
+                      srcDoc={htmlOf(active)}
+                      sandbox="allow-scripts allow-forms allow-modals"
+                      title={`Version ${active.n}`}
+                    />
+                  ) : (
+                    <div className="bed-empty">
+                      <h2>Sandbox runtime</h2>
+                      <p>
+                        This version's template ({active.manifest.template})
+                        runs in a server sandbox — arriving in the next phase.
+                      </p>
+                    </div>
+                  )
+                ) : (
+                  <div className="bed-empty">
+                    <h2>Nothing running</h2>
+                    <p>
+                      Ask for an app and it starts here. Ask a question and it
+                      just answers.
+                    </p>
+                  </div>
+                )}
+              </div>
             )}
-          </div>
-
-          <label className="settings-field">
-            <span>Default model</span>
-            <select value={settingsDefault} onChange={(e) => setSettingsDefault(e.target.value)}>
-              <option value="">Pick a model</option>
-              {allModelOptions.map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.provider} · {m.label}
-                </option>
-              ))}
-            </select>
-          </label>
-
-          <div className="key-grid">
-            <label className="settings-field">
-              <span>DeepSeek key {settings?.keys.deepseek ? "· saved" : ""}</span>
-              <input value={deepseekKey} onChange={(e) => setDeepseekKey(e.target.value)} placeholder="sk-..." />
-            </label>
-            <label className="settings-field">
-              <span>Anthropic key {settings?.keys.anthropic ? "· saved" : ""}</span>
-              <input value={anthropicKey} onChange={(e) => setAnthropicKey(e.target.value)} placeholder="sk-ant-..." />
-            </label>
-            <label className="settings-field">
-              <span>OpenAI key {settings?.keys.openai ? "· saved" : ""}</span>
-              <input value={openaiKey} onChange={(e) => setOpenaiKey(e.target.value)} placeholder="sk-..." />
-            </label>
-            <label className="settings-field">
-              <span>OpenRouter key {settings?.keys.openrouter ? "· saved" : ""}</span>
-              <input value={openrouterKey} onChange={(e) => setOpenrouterKey(e.target.value)} placeholder="sk-or-..." />
-            </label>
-          </div>
-
-          {settingsError && <div className="error">{settingsError}</div>}
-
-          <div className="settings-actions">
-            {settings?.configured && (
-              <button className="secondary" onClick={() => setSettingsOpen(false)} disabled={settingsSaving}>
-                Cancel
-              </button>
-            )}
-            <button className="build" onClick={saveSettings} disabled={settingsSaving || !settingsDefault}>
-              {settingsSaving ? "Saving…" : "Save settings"}
-            </button>
-          </div>
-        </section>
+          </section>
+        </div>
       </div>
-    )}
+      {settingsOpen && (
+        <div className="modal-backdrop" role="presentation">
+          <section
+            className="settings-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="settings-title"
+          >
+            <div className="settings-head">
+              <div>
+                <h2 id="settings-title">User settings</h2>
+                <p>
+                  Choose a default model and add the provider key this demo
+                  should use.
+                </p>
+              </div>
+              {settings?.configured && (
+                <button
+                  className="modal-close"
+                  onClick={() => setSettingsOpen(false)}
+                  aria-label="Close settings"
+                >
+                  X
+                </button>
+              )}
+            </div>
+
+            <label className="settings-field">
+              <span>Default model</span>
+              <select
+                value={settingsDefault}
+                onChange={(e) => setSettingsDefault(e.target.value)}
+              >
+                <option value="">Pick a model</option>
+                {allModelOptions.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.provider} · {m.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <div className="key-grid">
+              <label className="settings-field">
+                <span>
+                  DeepSeek key {settings?.keys.deepseek ? "· saved" : ""}
+                </span>
+                <input
+                  value={deepseekKey}
+                  onChange={(e) => setDeepseekKey(e.target.value)}
+                  placeholder="sk-..."
+                />
+              </label>
+              <label className="settings-field">
+                <span>
+                  Anthropic key {settings?.keys.anthropic ? "· saved" : ""}
+                </span>
+                <input
+                  value={anthropicKey}
+                  onChange={(e) => setAnthropicKey(e.target.value)}
+                  placeholder="sk-ant-..."
+                />
+              </label>
+              <label className="settings-field">
+                <span>OpenAI key {settings?.keys.openai ? "· saved" : ""}</span>
+                <input
+                  value={openaiKey}
+                  onChange={(e) => setOpenaiKey(e.target.value)}
+                  placeholder="sk-..."
+                />
+              </label>
+              <label className="settings-field">
+                <span>
+                  OpenRouter key {settings?.keys.openrouter ? "· saved" : ""}
+                </span>
+                <input
+                  value={openrouterKey}
+                  onChange={(e) => setOpenrouterKey(e.target.value)}
+                  placeholder="sk-or-..."
+                />
+              </label>
+            </div>
+
+            {settingsError && <div className="error">{settingsError}</div>}
+
+            <div className="settings-actions">
+              {settings?.configured && (
+                <button
+                  className="secondary"
+                  onClick={() => setSettingsOpen(false)}
+                  disabled={settingsSaving}
+                >
+                  Cancel
+                </button>
+              )}
+              <button
+                className="build"
+                onClick={saveSettings}
+                disabled={settingsSaving || !settingsDefault}
+              >
+                {settingsSaving ? "Saving…" : "Save settings"}
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
     </>
   );
 }
